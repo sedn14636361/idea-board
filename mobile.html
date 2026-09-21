@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+    <title>Idea Box</title>
+    <link rel="manifest" href="./mobile-manifest.webmanifest" />
+    <meta name="theme-color" content="#3E3A33" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Idea Box" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <style>
+      html, body { margin: 0; overscroll-behavior: none; background: #F6F2E9; }
+      body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
+      /* ホーム画面から開いたとき、下端の余白（ホームバー）を確保する */
+      :root { --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="fatal" style="display:none;font-family:sans-serif;padding:1.5em;line-height:1.7;color:#3E3A33"></div>
+    <script>
+      (function () {
+        var shown = false;
+        function show(msg) {
+          if (shown) return;
+          shown = true;
+          var el = document.getElementById("fatal");
+          el.style.display = "block";
+          el.innerHTML =
+            "<h3>読み込めませんでした</h3>" +
+            "<p>通信できない状態でアプリの一部が保存されていないと、この画面になります。" +
+            "一度ネットにつながる場所で開き直すと、次からはオフラインでも使えるようになります。</p>" +
+            "<pre style='white-space:pre-wrap;background:#f3efe6;padding:1em;border-radius:6px;font-size:.8em'>" +
+            String(msg).replace(/</g, "&lt;") + "</pre>" +
+            "<button id='rl' style='padding:.7em 1.4em;font-size:1em;cursor:pointer'>再読み込み</button>";
+          document.getElementById("rl").onclick = function () { location.reload(); };
+        }
+        // JSやCSSが取得できなかった場合も拾う（キャプチャ段階で監視する）
+        window.addEventListener("error", function (e) {
+          if (e.target && (e.target.tagName === "SCRIPT" || e.target.tagName === "LINK")) {
+            show("アプリ本体を読み込めませんでした: " + (e.target.src || e.target.href));
+          } else {
+            show(e.message || "不明なエラー");
+          }
+        }, true);
+        // 3秒待っても描画されないときも案内を出す
+        setTimeout(function () {
+          var root = document.getElementById("root");
+          if (root && root.childElementCount === 0) show("アプリの起動に時間がかかっています");
+        }, 3000);
+      })();
+    </script>
+    <script type="module" src="/src/mobile.jsx"></script>
+    <script>
+      // ブラウザ(PWA)で開いたときだけ有効にする
+      (function () {
+        if (!("serviceWorker" in navigator)) return;
+        if (location.protocol !== "http:" && location.protocol !== "https:") return;
+        window.addEventListener("load", function () {
+          navigator.serviceWorker.register("./mobile-sw.js").catch(function () {});
+        });
+      })();
+    </script>
+  </body>
+</html>
