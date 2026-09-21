@@ -1,0 +1,61 @@
+{
+  "name": "idea-board",
+  "version": "5.8.0",
+  "description": "付箋型アイデアボード",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "node tools/check.mjs && vite build",
+    "preview": "vite preview --host",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "check": "node tools/check.mjs",
+    "app": "electron ."
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^31.7.6",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.ideaboard.app",
+    "productName": "IdeaBoard",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "darkModeSupport": true
+    },
+    "asar": true
+  },
+  "private": true
+}

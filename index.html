@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+    <title>IdeaBoard</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#3E3A33" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="IdeaBoard" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <style>
+      html, body { margin: 0; overscroll-behavior: none; }
+      body { -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="fatal" style="display:none;font-family:sans-serif;padding:1.5em;line-height:1.7;color:#3E3A33"></div>
+    <script>
+      // 起動時にエラーが起きたら、白画面のままにせず内容を表示する
+      (function () {
+        function show(msg) {
+          var el = document.getElementById("fatal");
+          el.style.display = "block";
+          el.innerHTML =
+            "<h3>起動時にエラーが発生しました</h3><pre style='white-space:pre-wrap;background:#f3efe6;padding:1em;border-radius:6px'>" +
+            String(msg).replace(/</g, "&lt;") +
+            "</pre><p>データが原因の場合は、下のボタンで保存内容を初期化すると起動できることがあります（内容は消えます）。</p>" +
+            "<button id='resetBtn' style='padding:.6em 1.2em;font-size:1em;cursor:pointer'>保存内容を初期化して再読み込み</button>";
+          document.getElementById("resetBtn").onclick = function () {
+            try { localStorage.removeItem("idea-board-state"); } catch (e) {}
+            location.reload();
+          };
+        }
+        window.addEventListener("error", function (e) { show(e.message + "\n" + (e.error && e.error.stack || "")); });
+        window.addEventListener("unhandledrejection", function (e) { show(e.reason); });
+      })();
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Service Worker はブラウザ(PWA)専用。
+      // デスクトップ版(file://)で動くとファイル読み込みを横取りして真っ白になるため、
+      // http/https のときだけ登録し、file:// では登録済みのものを解除する。
+      (function () {
+        if (!("serviceWorker" in navigator)) return;
+        var isWeb = location.protocol === "http:" || location.protocol === "https:";
+        if (isWeb) {
+          window.addEventListener("load", function () {
+            navigator.serviceWorker.register("./sw.js").catch(function () {});
+          });
+        } else {
+          navigator.serviceWorker.getRegistrations().then(function (rs) {
+            rs.forEach(function (r) { r.unregister(); });
+          }).catch(function () {});
+          if (window.caches && caches.keys) {
+            caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }).catch(function () {});
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
