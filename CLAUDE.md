@@ -110,7 +110,7 @@
 - クラウド設定の保存: loadCloudConf/saveCloudConf に加えて loadCloudDraft/saveCloudDraft（入力途中の控え）を用意。**読み込みは他の初期化処理と分けた独立の useEffect** で行う（まとめて読むと、途中で例外が出たときに設定だけ復元されない事故になる）。saveCloudConf は保存可否を返し、失敗時はその旨を画面に出す
 - 注意: Safari で開いた場合とホーム画面アプリとして開いた場合で、保存先が別になることがある。設定は開き方ごとに1回ずつ必要になる場合がある（「設定をコピー」「設定を貼り付け」で移せる）
 - スマホ版の「まとめ先」(AREAS_KEY): 付箋ごとに指定できる区分。名前と色を持ち、送信時に area / areaColor として渡す。PC側の placeIncoming は **area を最優先**（無ければタグのカテゴリ）でグループ化し、その色で領域(zone)を作る
-- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。現在 5.0.0。設定画面（PC）と⚙（スマホ）に表示される
+- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。現在 5.9.0。設定画面（PC）と⚙（スマホ）に表示される
 - スマホ版の一覧: チェックで選択 → 共有・CSV出力・削除・PCへ送信は「選んだものだけ」（未選択なら全部）。↑↓で並び替えでき、**その順番のままPCに取り込まれる**（items は上から古い順で保持し、追加は末尾に足す）
 - スマホ版の「データでコピー」は廃止し CSV 出力に置き換え（BOM付き・引用符エスケープ。navigator.share のファイル共有を優先、不可ならダウンロード、それも不可ならコピー）
 - **ホーム画面アプリ（standalone）ではクラウド同期を出さない**: iOSのPWAは設定を保持できないことがあるため。判定は display-mode:standalone / navigator.standalone。CSVや共有での受け渡しを案内する
@@ -157,3 +157,15 @@
   - **クラウドが正**。起動時（cloud が入った時）に tagsPull して上書きし、編集後3秒で tagsPush
   - tagsLoaded ref で「読み終わる前に上げてしまう」事故を防ぐ。tagsSaved ref で同じ内容の再送を止める
   - スマホ版は ALERT_TAGS を定数から state（alertTags）へ変更。tagColorOfIn の第3引数で渡す
+
+## 5.9.0 での変更
+- **通し番号(num)は「今ある付箋だけ・空きなし」**にした。`renumber(notes)` が現在の num の順を保ったまま 1..N に詰め直し、`nextNum` を N+1 で返す純粋関数
+  - 呼ぶのは2箇所だけ: `normalizeBoard`（読み込み時。既存データの飛び番号もここで解消）と `removeNoteIds`（剥がしたとき）
+  - 追加は従来どおり `nextNum++`。削除のたびに詰めているので、それだけで空きなしが保たれる
+- **本文の `#番号` も同じ対応表で書き換える**。`note.refs` はID参照なので無関係だが、本文の `#N` は描画時に num で照合している（`textRefIds`）ため、詰めるとそのままでは別の付箋を指してしまう
+  - 置換は `replace(/#(\d+)/g, ...)` の**1パス**で行う。順に置換すると `#7→#5` と `#5→#4` が連鎖して壊れる
+  - 対応表にない番号（消えた付箋への参照、`#999`、色コードの `#333333` など）は**触らない**。本文はユーザーが書いた文章なので勝手に消さない
+  - 副作用: 「第3章」の意味で書いた `#3` も巻き込まれる。ユーザーに確認のうえ採用した仕様
+- 剥がす処理を `removeNoteIds(doomed)` に一本化した（`removeNote` / `deleteSelected` / `listDelete` / `listMoveTo` の4箇所が同じ `.filter().map()` を複製していた）
+  - 引用外し・線の削除・番号の詰め直しを**1回の updateBoard で**まとめて行う。別々に更新すると、詰める前の番号が一瞬描画される
+- `clearAll` は `nextNum` も 1 に戻す（ここだけ `removeNoteIds` を通らないため）

@@ -109,6 +109,33 @@ const makeProject = (name) => {
   return { id: nextId(), name, boards: [b], currentBoardId: b.id };
 };
 
+// 通し番号を「今ある付箋だけ・空きなし」に詰め直す。
+// 並び順は今の番号のままなので、消した付箋より後ろだけが繰り上がる。
+// 本文の #番号 も同じ対応表で一度に置換し、同じ付箋を指し続けるようにする
+// （置換は1パスなので #7→#5 と #5→#4 が連鎖することはない）。
+function renumber(notes) {
+  const order = [...notes].sort((a, b) => (a.num || 0) - (b.num || 0));
+  const newNumOf = new Map();   // id → 新しい番号
+  const remap = new Map();      // 旧番号 → 新番号
+  let changed = false;
+  order.forEach((n, i) => {
+    const nn = i + 1;
+    newNumOf.set(n.id, nn);
+    if (n.num) remap.set(n.num, nn);
+    if (n.num !== nn) changed = true;
+  });
+  if (!changed) return { notes, nextNum: notes.length + 1 };
+  const fixText = (t) =>
+    typeof t === "string" && t.includes("#")
+      // 該当する付箋が無い番号（#999 など）はただの文字なので触らない
+      ? t.replace(/#(\d+)/g, (m, d) => { const to = remap.get(parseInt(d, 10)); return to ? `#${to}` : m; })
+      : t;
+  return {
+    notes: notes.map((n) => ({ ...n, num: newNumOf.get(n.id), text: fixText(n.text) })),
+    nextNum: notes.length + 1,
+  };
+}
+
 // 読み込み時の整備: 通し番号の付与と、深すぎる入れ子の展開解除
 function normalizeBoard(b) {
   let notes = (b.notes || []).map(noteDefaults);
@@ -122,7 +149,9 @@ function normalizeBoard(b) {
     return d;
   };
   notes = notes.map((n) => (depthOf(n) >= MAX_DEPTH ? { ...n, expanded: false } : n));
-  return { ...b, notes, edges: b.edges || [], texts: b.texts || [], zones: b.zones || [], strokes: b.strokes || [], images: b.images || [], nextNum: Math.max(b.nextNum || 1, maxN + 1) };
+  // 過去の削除でできた飛び番号も、ここで 1..N に詰める
+  const packed = renumber(notes);
+  return { ...b, notes: packed.notes, edges: b.edges || [], texts: b.texts || [], zones: b.zones || [], strokes: b.strokes || [], images: b.images || [], nextNum: packed.nextNum };
 }
 
 function anchorIdOf(id, map) {
@@ -1925,12 +1954,7 @@ export default function IdeaBoard() {
           doomed.add(id);
           for (const d of collectDescendants(id, byParent)) doomed.add(d);
         }
-        setNotes((ns) =>
-          ns
-            .filter((n) => !doomed.has(n.id))
-            .map((n) => ((n.refs || []).some((r) => doomed.has(r)) ? { ...n, refs: n.refs.filter((r) => !doomed.has(r)) } : n))
-        );
-        setEdges((es) => es.filter((e) => !doomed.has(e.from) && !doomed.has(e.to)));
+        removeNoteIds(doomed);
         setTexts((ts) => ts.filter((t) => !selectedTextIds.includes(t.id)));
         setSelectedIds([]);
         setSelectedTextIds([]);
@@ -2092,15 +2116,29 @@ export default function IdeaBoard() {
     else setConfirmBox({ message, okLabel, action });
   };
 
-  const removeNote = (id) => {
-    const doomed = new Set([id, ...collectDescendants(id, byParent)]);
-    setNotes((ns) =>
-      ns
+  // 付箋をまとめて剥がす共通処理。
+  // 引用外し・線の削除・通し番号の詰め直しを 1回の更新でまとめて行う
+  // （別々に更新すると、番号を詰める前の状態が一瞬描画されてしまう）。
+  const removeNoteIds = (doomed) => {
+    if (doomed.size === 0) return;
+    updateBoard((b) => {
+      const kept = (b.notes || [])
         .filter((n) => !doomed.has(n.id))
         // 消えた付箋への引用も外す
-        .map((n) => ((n.refs || []).some((r) => doomed.has(r)) ? { ...n, refs: n.refs.filter((r) => !doomed.has(r)) } : n))
-    );
-    setEdges((es) => es.filter((e) => !doomed.has(e.from) && !doomed.has(e.to)));
+        .map((n) => ((n.refs || []).some((r) => doomed.has(r)) ? { ...n, refs: n.refs.filter((r) => !doomed.has(r)) } : n));
+      const packed = renumber(kept);
+      return {
+        ...b,
+        notes: packed.notes,
+        nextNum: packed.nextNum,
+        edges: (b.edges || []).filter((e) => !doomed.has(e.from) && !doomed.has(e.to)),
+      };
+    });
+  };
+
+  const removeNote = (id) => {
+    const doomed = new Set([id, ...collectDescendants(id, byParent)]);
+    removeNoteIds(doomed);
     if (doomed.has(connectFrom)) setConnectFrom(null);
     if (doomed.has(colorMenuFor)) setColorMenuFor(null);
     if (doomed.has(tagMenuFor)) setTagMenuFor(null);
@@ -2117,7 +2155,7 @@ export default function IdeaBoard() {
       message: "このボードの付箋・線・文字・領域・手書き・画像をすべて剥がします。よろしいですか？",
       okLabel: "空にする",
       action: () => {
-        setNotes([]);
+        updateBoard((b) => ({ ...b, notes: [], nextNum: 1 }));
         setEdges([]);
         setTexts([]);
         setZones([]);
@@ -2304,12 +2342,7 @@ export default function IdeaBoard() {
       collectDescendants(id, byParent).forEach((d) => doomed.add(d));
     });
     setTimeout(() => {
-      setNotes((ns) =>
-        ns
-          .filter((n) => !doomed.has(n.id))
-          .map((n) => ((n.refs || []).some((r) => doomed.has(r)) ? { ...n, refs: n.refs.filter((r) => !doomed.has(r)) } : n))
-      );
-      setEdges((es) => es.filter((e) => !doomed.has(e.from) && !doomed.has(e.to)));
+      removeNoteIds(doomed);
     }, 0);
     setListPicked([]);
     setListActionOpen(null);
@@ -2326,12 +2359,7 @@ export default function IdeaBoard() {
           doomed.add(id);
           collectDescendants(id, byParent).forEach((d) => doomed.add(d));
         });
-        setNotes((ns) =>
-          ns
-            .filter((n) => !doomed.has(n.id))
-            .map((n) => ((n.refs || []).some((r) => doomed.has(r)) ? { ...n, refs: n.refs.filter((r) => !doomed.has(r)) } : n))
-        );
-        setEdges((es) => es.filter((e) => !doomed.has(e.from) && !doomed.has(e.to)));
+        removeNoteIds(doomed);
         setListPicked([]);
       }
     );
