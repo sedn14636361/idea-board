@@ -522,7 +522,11 @@ export default function MobileQuickAdd() {
 
       {/* ヘッダー */}
       <div style={{ background: "#3E3A33", color: "#F6F2E9", padding: "calc(10px + var(--safe-t, 0px)) 14px 10px", display: "flex", alignItems: "center", gap: 10 }}>
-        <strong style={{ fontSize: 15, flex: 1 }}>アイデアボックス</strong>
+        <strong style={{ fontSize: 15, flex: 1 }}>
+          アイデアボックス
+          {/* 今どの版が入っているかを、開かなくても分かるようにしておく */}
+          <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.55, marginLeft: 6 }}>版 {APP_VERSION}</span>
+        </strong>
         {cloud && cloudUsable ? (
           <span style={{ fontSize: 11, opacity: 0.85 }}>
             {unsent.length > 0 ? `○ 未送信${unsent.length}` : "● 同期中"}

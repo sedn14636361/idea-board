@@ -110,7 +110,7 @@
 - クラウド設定の保存: loadCloudConf/saveCloudConf に加えて loadCloudDraft/saveCloudDraft（入力途中の控え）を用意。**読み込みは他の初期化処理と分けた独立の useEffect** で行う（まとめて読むと、途中で例外が出たときに設定だけ復元されない事故になる）。saveCloudConf は保存可否を返し、失敗時はその旨を画面に出す
 - 注意: Safari で開いた場合とホーム画面アプリとして開いた場合で、保存先が別になることがある。設定は開き方ごとに1回ずつ必要になる場合がある（「設定をコピー」「設定を貼り付け」で移せる）
 - スマホ版の「まとめ先」(AREAS_KEY): 付箋ごとに指定できる区分。名前と色を持ち、送信時に area / areaColor として渡す。PC側の placeIncoming は **area を最優先**（無ければタグのカテゴリ）でグループ化し、その色で領域(zone)を作る
-- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。現在 5.9.0。設定画面（PC）と⚙（スマホ）に表示される
+- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。現在 5.10.0。設定画面（PC）と⚙（スマホ）に表示される
 - スマホ版の一覧: チェックで選択 → 共有・CSV出力・削除・PCへ送信は「選んだものだけ」（未選択なら全部）。↑↓で並び替えでき、**その順番のままPCに取り込まれる**（items は上から古い順で保持し、追加は末尾に足す）
 - スマホ版の「データでコピー」は廃止し CSV 出力に置き換え（BOM付き・引用符エスケープ。navigator.share のファイル共有を優先、不可ならダウンロード、それも不可ならコピー）
 - **ホーム画面アプリ（standalone）ではクラウド同期を出さない**: iOSのPWAは設定を保持できないことがあるため。判定は display-mode:standalone / navigator.standalone。CSVや共有での受け渡しを案内する
@@ -169,3 +169,12 @@
 - 剥がす処理を `removeNoteIds(doomed)` に一本化した（`removeNote` / `deleteSelected` / `listDelete` / `listMoveTo` の4箇所が同じ `.filter().map()` を複製していた）
   - 引用外し・線の削除・番号の詰め直しを**1回の updateBoard で**まとめて行う。別々に更新すると、詰める前の番号が一瞬描画される
 - `clearAll` は `nextNum` も 1 に戻す（ここだけ `removeNoteIds` を通らないため）
+
+## 5.10.0 での変更
+- **スマホ版PWAが新しい版に入れ替わらない不具合を修正**（実ブラウザで再現・修正の両方を確認済み）
+  - 原因は2つ重なっていた。①`mobile-sw.js` の navigate 分岐が**キャッシュ優先で取り直しが無い**（JS/CSS 側だけ stale-while-revalidate になっていた）。`mobile.html` はハッシュ付きのファイル名を持つので、HTMLが固定されると読み込むJSも永久に固定される。②`CACHE` が固定値で `mobile-sw.js` の中身が版ごとに変わらないため、ブラウザが再インストールせず `precache()` が二度と走らない
+  - 直し方: navigate でも `e.waitUntil(update())` を回す。`update()` は**ページ本体だけ毎回取り直して比較**し（数KB）、変わっていたときだけ新しい JS/CSS を全部そろえ、**そろってから** `cache.put(PAGE)` する
+  - **ページを先に差し替えてはいけない**。次にオフラインで開いたとき、新しいページがまだ保存していないJSを探して起動できなくなる
+  - 古い版で固定された端末も、`mobile-sw.js` の中身が変わればブラウザが再インストールするので復帰する（SWスクリプト自体はキャッシュを迂回して取得されるため）。実験で確認済み
+  - 版を重ねてもキャッシュが膨らまないよう、更新成功後に新しいHTMLが参照していないファイルを消す
+- スマホ版のヘッダーに `版 {APP_VERSION}` を常時表示。⚙ と i の中にもあるが、開かないと見えなかった
