@@ -149,55 +149,209 @@ export async function cloudRemove(conf, docIds) {
 const projUrl = (conf) =>
   `https://firestore.googleapis.com/v1/projects/${conf.projectId}/databases/(default)/documents/projects/${conf.room}/items`;
 
-// Firestore の1件あたりの上限は約1MB。余裕を見てこの大きさで判断する
-const SIZE_LIMIT = 900 * 1024;
+// ============================================================
+// 分割保存（サーバーを保存先の本体にするための土台）
+// ------------------------------------------------------------
+// Firestore は1件あたり約1MB(バイト)まで。プロジェクトを丸ごと1件に入れると
+// すぐ超えるので、**ボードごとに分け、さらに大きければ細切れ**にして保存する。
+//   {projectId}                     … 目次（名前・更新時刻・ボードの一覧）。一覧に出るのはこれだけ
+//   __b_{projectId}_{boardId}_{i}   … ボードの中身の i 番目のかけら
+// 目次以外は "__" で始まるので、projectList には出てこない。
+// ============================================================
 
-// 画像はデータが大きいので、収まらないときは外して保存する
-const stripImages = (project) => ({
-  ...project,
-  boards: (project.boards || []).map((b) => ({ ...b, images: [] })),
-});
+// **文字数ではなくバイト数で測る**。日本語は1文字3バイトになるので、
+// 文字数で判断すると実際の3倍近い大きさのものを「収まる」と誤判定する。
+const byteLen = (s) => {
+  let n = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+  }
+  return n;
+};
 
-export async function projectPush(conf, project, device) {
-  const token = await signIn(conf);
-  let body = JSON.stringify(project);
-  let dropped = false;
-  if (body.length > SIZE_LIMIT) {
-    body = JSON.stringify(stripImages(project));
-    dropped = true;
+// 1つのかけらの大きさ。1MBの上限に対して、他の項目のぶんの余裕を見ている
+const CHUNK = 700 * 1024;
+
+// 文字の切れ目を壊さずにバイト数で切り分ける
+export function splitByBytes(str, max = CHUNK) {
+  const out = [];
+  let buf = "", n = 0;
+  for (const ch of str) {
+    const cp = ch.codePointAt(0);
+    const w = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (n + w > max && buf) { out.push(buf); buf = ""; n = 0; }
+    buf += ch; n += w;
   }
-  if (body.length > SIZE_LIMIT) {
-    return { ok: false, tooBig: true };
-  }
-  const r = await fetch(`${projUrl(conf)}?documentId=${encodeURIComponent(project.id)}`, {
-    method: "POST",
+  if (buf || out.length === 0) out.push(buf);
+  return out;
+}
+
+// 中身が変わったかどうかの判定だけに使う、軽い指紋
+export function hashOf(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = (((h << 5) + h) ^ str.charCodeAt(i)) >>> 0;
+  return h.toString(36) + "-" + str.length.toString(36);
+}
+
+const partId = (pid, bid, i) => `__b_${pid}_${bid}_${i}`;
+
+// サーバーの目次から「前回どのボードを何かけらで、どの指紋で保存したか」を読む
+const headPrev = async (conf, token, pid) => {
+  const r = await fetch(`${projUrl(conf)}/${encodeURIComponent(pid)}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) return { __parts: {} };
+  const d = await r.json();
+  if (d.fields?.shape?.stringValue !== "split") return { __parts: {} };
+  try {
+    const meta = JSON.parse(d.fields.meta.stringValue);
+    const prev = { __parts: {} };
+    for (const m of meta.boards || []) {
+      prev.__parts[m.id] = m.parts;
+      if (m.h) prev[m.id] = m.h;
+    }
+    return prev;
+  } catch (e) { return { __parts: {} }; }
+};
+
+const putDoc = async (conf, token, id, fields) => {
+  const url = `${projUrl(conf)}/${encodeURIComponent(id)}`;
+  // PATCH は無ければ作ってくれるので、作成と更新を分けなくてよい
+  const r = await fetch(url, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      fields: {
-        payload: { stringValue: body },
-        name: { stringValue: project.name || "" },
-        device: { stringValue: device || "" },
-        savedAt: { integerValue: String(Date.now()) },
-      },
-    }),
+    body: JSON.stringify({ fields }),
   });
-  // 同じIDが既にある場合は上書きする
-  if (r.status === 409) {
-    const r2 = await fetch(`${projUrl(conf)}/${encodeURIComponent(project.id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        fields: {
-          payload: { stringValue: body },
-          name: { stringValue: project.name || "" },
-          device: { stringValue: device || "" },
-          savedAt: { integerValue: String(Date.now()) },
-        },
-      }),
-    });
-    return { ok: r2.ok, dropped };
+  return r.ok;
+};
+
+const getDoc = async (conf, token, id) => {
+  const r = await fetch(`${projUrl(conf)}/${encodeURIComponent(id)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) return null;
+  return await r.json();
+};
+
+const delDoc = async (conf, token, id) => {
+  await fetch(`${projUrl(conf)}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => {});
+};
+
+// プロジェクトを分割して保存する。
+// prev に前回の指紋を渡すと、**中身が変わったボードだけ**書き込む。
+// 返り値の hashes を次回の prev に渡す。
+export async function projectPushSplit(conf, project, device, prev = {}) {
+  const token = await signIn(conf);
+  // 前回の記録が無い（再起動した直後など）ときは、サーバーの目次から復元する。
+  // こうしないと、変わっていないボードまで送り直し、消したボードのかけらがサーバーに取り残される。
+  if (!prev.__parts) prev = await headPrev(conf, token, project.id);
+  const boards = project.boards || [];
+  const hashes = {};
+  const metaBoards = [];
+
+  for (const b of boards) {
+    const body = JSON.stringify(b);
+    const h = hashOf(body);
+    hashes[b.id] = h;
+    const parts = splitByBytes(body);
+    metaBoards.push({ id: b.id, parts: parts.length, h });
+
+    if (prev[b.id] === h) continue;              // 変わっていないので書かない
+    for (let i = 0; i < parts.length; i++) {
+      const ok = await putDoc(conf, token, partId(project.id, b.id, i), {
+        part: { stringValue: parts[i] },
+      });
+      if (!ok) return { ok: false };
+    }
+    // 前より短くなったとき、余ったかけらを消す
+    const before = (prev.__parts && prev.__parts[b.id]) || 0;
+    for (let i = parts.length; i < before; i++) await delDoc(conf, token, partId(project.id, b.id, i));
   }
-  return { ok: r.ok, dropped };
+
+  // 消えたボードのかけらを片づける
+  for (const [bid, cnt] of Object.entries((prev.__parts || {}))) {
+    if (boards.some((b) => b.id === bid)) continue;
+    for (let i = 0; i < cnt; i++) await delDoc(conf, token, partId(project.id, bid, i));
+  }
+
+  const savedAt = Date.now();
+  const ok = await putDoc(conf, token, project.id, {
+    shape: { stringValue: "split" },
+    meta: { stringValue: JSON.stringify({ currentBoardId: project.currentBoardId, boards: metaBoards }) },
+    name: { stringValue: project.name || "" },
+    device: { stringValue: device || "" },
+    savedAt: { integerValue: String(savedAt) },
+  });
+  hashes.__parts = Object.fromEntries(metaBoards.map((m) => [m.id, m.parts]));
+  return { ok, hashes, savedAt };
+}
+
+// 目次の更新時刻だけを取る。無ければ null（1回の読み取りで済む）
+export async function projectHead(conf, id) {
+  const token = await signIn(conf);
+  const r = await fetch(
+    `${projUrl(conf)}/${encodeURIComponent(id)}?mask.fieldPaths=savedAt&mask.fieldPaths=device`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("head " + r.status);   // 電波が無いなど。「無い」とは区別する
+  const d = await r.json();
+  return { savedAt: Number(d.fields?.savedAt?.integerValue || 0), device: d.fields?.device?.stringValue || "" };
+}
+
+// 分割保存されたプロジェクトを組み立てて返す。
+// 旧形式（payload に丸ごと）で保存されているものもそのまま読める。
+export async function projectPullSplit(conf, id) {
+  const token = await signIn(conf);
+  const head = await getDoc(conf, token, id);
+  if (!head) return null;
+  const f = head.fields || {};
+  const savedAt = Number(f.savedAt?.integerValue || 0);
+  const device = f.device?.stringValue || "";
+
+  // 旧形式
+  if (f.payload?.stringValue) {
+    try {
+      return { project: JSON.parse(f.payload.stringValue), savedAt, device, shape: "whole" };
+    } catch (e) { return null; }
+  }
+  if (f.shape?.stringValue !== "split") return null;
+
+  let meta;
+  try { meta = JSON.parse(f.meta?.stringValue || "{}"); } catch (e) { return null; }
+
+  const boards = [];
+  const parts = {};
+  for (const m of meta.boards || []) {
+    const got = await Promise.all(
+      Array.from({ length: m.parts }, (_, i) => getDoc(conf, token, partId(id, m.id, i)))
+    );
+    if (got.some((g) => !g)) return null;        // 欠けているなら組み立てない
+    const body = got.map((g) => g.fields?.part?.stringValue || "").join("");
+    try { boards.push(JSON.parse(body)); } catch (e) { return null; }
+    parts[m.id] = m.parts;
+  }
+
+  const hashes = Object.fromEntries(boards.map((b) => [b.id, hashOf(JSON.stringify(b))]));
+  hashes.__parts = parts;
+  return {
+    project: { id, name: f.name?.stringValue || "", boards, currentBoardId: meta.currentBoardId },
+    savedAt, device, shape: "split", hashes,
+  };
+}
+
+// 分割保存されたプロジェクトを、かけらごと消す
+export async function projectRemoveSplit(conf, id, partsByBoard) {
+  const token = await signIn(conf);
+  // かけらの数が分からないときは目次から知る（消し残しを出さないため）
+  if (!partsByBoard || Object.keys(partsByBoard).length === 0) partsByBoard = (await headPrev(conf, token, id)).__parts;
+  for (const [bid, cnt] of Object.entries(partsByBoard)) {
+    for (let i = 0; i < cnt; i++) await delDoc(conf, token, partId(id, bid, i));
+  }
+  await delDoc(conf, token, id);
+  return true;
 }
 
 // 一覧（中身は取らず、名前と更新時刻だけ）
@@ -217,36 +371,6 @@ export async function projectList(conf) {
     savedAt: Number(doc.fields?.savedAt?.integerValue || 0),
   })).sort((a, b) => b.savedAt - a.savedAt);
 }
-
-export async function projectPull(conf, id) {
-  const token = await signIn(conf);
-  const r = await fetch(`${projUrl(conf)}/${encodeURIComponent(id)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!r.ok) return null;
-  const d = await r.json();
-  try {
-    return {
-      project: JSON.parse(d.fields?.payload?.stringValue || "{}"),
-      device: d.fields?.device?.stringValue || "",
-      savedAt: Number(d.fields?.savedAt?.integerValue || 0),
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
-export async function projectRemove(conf, id) {
-  const token = await signIn(conf);
-  await fetch(`${projUrl(conf)}/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  }).catch(() => {});
-}
-
-// ============================================================
-// 設定の診断（どこでつまずいているかを調べる）
-// ============================================================
 
 export const FIRESTORE_RULES = `rules_version = '2';
 service cloud.firestore {

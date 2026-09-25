@@ -1,3 +1,3 @@
 // アプリの版。機能を足したり直したりしたら、ここを更新する。
 // 目安: 大きな作り替え=左、機能追加=中、修正=右
-export const APP_VERSION = "5.10.0";
+export const APP_VERSION = "6.0.0";
