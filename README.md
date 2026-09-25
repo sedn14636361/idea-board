@@ -39,29 +39,7 @@
 
 ## 使い始める
 
-### HTML 1枚で使う（いちばん手軽）
-
-`IdeaBoard.html` をダブルクリックするだけです。インストールも exe も要りません。
-Chrome / Edge / Safari / Firefox で動きます。作り方は下の「ソースから動かす場合」の `npm run single` です。
-
-クラウド同期を設定しておけば、データはサーバーに保存されるので、
-**どのパソコンでこの HTML を開いても同じ内容**が出ます。
-
-### 完成版（exe / dmg）を受け取った場合
-
-**Windows**
-`IdeaBoard.exe` をダブルクリックするだけです。インストールは要りません。
-
-起動時に「WindowsによってPCが保護されました」と出た場合は、
-「詳細情報」→「実行」で開けます。個人が作ったアプリのため出る表示で、問題はありません。
-
-**Mac**
-`IdeaBoard.app` を右クリック（control+クリック）→「開く」→「開く」。
-初回だけこの手順が必要です。詳しくは [docs/MAC.md](docs/MAC.md) を参照してください。
-
-### ソースから動かす場合
-
-[Node.js](https://nodejs.org/)（LTS版）を入れてから、フォルダ内で次を実行します。
+[Node.js](https://nodejs.org/)（LTS版）を入れてから、zipを解凍したフォルダ内で次を実行します。
 
 ```
 npm install     （初回のみ）
@@ -69,13 +47,13 @@ npm run start   組み立ててから起動する（コードを変えたとき�
 npm run app     すぐ起動する（2回目以降はこちらが速いです）
 ```
 
-HTML 1枚の版を作るときは次を実行します。`release/IdeaBoard.html` ができます。
+HTML 1枚で動く版を作るときは次を実行します。`release/IdeaBoard.html` ができ、ダブルクリックで開けます（どの機種の上でも作れます）。
 
 ```
-npm run single      HTML 1枚で動く版を作る（どの機種の上でも作れます）
+npm run single      HTML 1枚で動く版を作る
 ```
 
-exe / dmg を作るときは、その機種の上で実行してください。
+exeファイルを作るときは、その機種の上で実行してください。
 
 ```
 npm run dist:win    Windows用のexeを作る
