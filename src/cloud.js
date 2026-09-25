@@ -354,22 +354,36 @@ export async function projectRemoveSplit(conf, id, partsByBoard) {
   return true;
 }
 
-// 一覧（中身は取らず、名前と更新時刻だけ）
+// 一覧（中身は取らず、名前と更新時刻だけ）。
+// **最後のページまで読む**。分割保存のかけらも同じ場所にあり、名前が "__" で始まるので並び順で先に来る。
+// 1ページで打ち切ると、かけらが100件を超えたときプロジェクト本体が一覧からこぼれ、
+// 「サーバーに無い」と取り違えて上書きしてしまう。
+// **失敗は例外にする**（空の一覧を返すと「サーバーに何も無い」と取り違える）。
 export async function projectList(conf) {
   const token = await signIn(conf);
-  const r = await fetch(`${projUrl(conf)}?pageSize=100&mask.fieldPaths=name&mask.fieldPaths=device&mask.fieldPaths=savedAt`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!r.ok) return [];
-  const d = await r.json();
-  return (d.documents || [])
-    .filter((doc) => !doc.name.split("/").pop().startsWith("__")) // タグ表などは一覧に出さない
+  const docs = [];
+  let pageToken = "";
+  for (let n = 0; n < 1000; n++) {
+    const r = await fetch(
+      `${projUrl(conf)}?pageSize=100&mask.fieldPaths=name&mask.fieldPaths=device&mask.fieldPaths=savedAt` +
+        (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""),
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) throw new Error("list " + r.status);
+    const d = await r.json();
+    docs.push(...(d.documents || []));
+    if (!d.nextPageToken) break;
+    pageToken = d.nextPageToken;
+  }
+  return docs
+    .filter((doc) => !doc.name.split("/").pop().startsWith("__")) // タグ表やかけらは一覧に出さない
     .map((doc) => ({
-    id: doc.name.split("/").pop(),
-    name: doc.fields?.name?.stringValue || "（無題）",
-    device: doc.fields?.device?.stringValue || "",
-    savedAt: Number(doc.fields?.savedAt?.integerValue || 0),
-  })).sort((a, b) => b.savedAt - a.savedAt);
+      id: doc.name.split("/").pop(),
+      name: doc.fields?.name?.stringValue || "（無題）",
+      device: doc.fields?.device?.stringValue || "",
+      savedAt: Number(doc.fields?.savedAt?.integerValue || 0),
+    }))
+    .sort((a, b) => b.savedAt - a.savedAt);
 }
 
 export const FIRESTORE_RULES = `rules_version = '2';

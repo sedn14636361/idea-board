@@ -926,10 +926,13 @@ export default function IdeaBoard() {
   // サーバーへ送る（中身が変わったボードだけ）。
   // 送る直前にサーバーの更新時刻を確かめ、他の端末が先に書いていたら上書きしない。
   const pushOne = async (p, force = false) => {
+    // 確かめずに送る（force）のは、利用者が「この端末の方」を選んだときと、
+    // たった今サーバーに無いと確かめたときだけ。
     if (!force) {
       const head = await projectHead(cloud, p.id);
       const known = syncState.current[p.id];
-      if (head && known && head.savedAt > known.at + SLACK) {
+      // この端末で一度も同期していないのにサーバーにある → どちらが新しいか分からないので上書きしない
+      if (head && (!known || head.savedAt > known.at + SLACK)) {
         setSyncConflict({ id: p.id, name: p.name, device: head.device });
         return false;
       }
@@ -947,13 +950,26 @@ export default function IdeaBoard() {
   //   手元だけ変わった → 送る / サーバーだけ新しい → 読む / 両方変わった → 利用者に選んでもらう
   //   この端末でまだ一度も同期していないものは、サーバーにあればサーバーを正とする（手元は復元ポイントへ）
   //   サーバーに無いものは送る（初めてクラウドを設定したときの移行）
-  const reconcile = async () => {
+  // full: 全件の一覧を取る（起動時・プロジェクトを開いたとき・パネルを開いたとき）。
+  // そうでなければ、開いているプロジェクトの目次だけ確かめる（定期の確認）。
+  // 一覧は全ページ読むので文書の数だけ読み取りが増え、定期に回すと Firestore の無料枠を使い切る。
+  const reconcile = async (full = true) => {
     if (!cloud || !syncLoaded.current || syncBusy.current) return;
     syncBusy.current = true;
     try {
-      const list = await refreshCloudProjects(cloud);
-      if (list === null) return;                       // 電波が無い。手元のまま続ける
-      const onServer = new Map(list.map((x) => [x.id, x]));
+      let list = [];
+      const onServer = new Map();
+      if (full) {
+        list = await refreshCloudProjects(cloud);
+        if (list === null) return;                     // つながらない・失敗。手元のまま続ける
+        for (const x of list) onServer.set(x.id, x);
+      } else {
+        for (const p of projectsRef.current) {
+          if (!syncedOn(p.id)) continue;
+          const h = await projectHead(cloud, p.id);    // 失敗は例外になり、この回は中断する
+          if (h) onServer.set(p.id, { id: p.id, ...h });
+        }
+      }
 
       // この端末が白紙のプロジェクトしか持っていないなら、サーバーの最新を開く。
       // 新しい端末でHTMLを開いたとき、自分のデータがそのまま出るようにするため。
@@ -979,7 +995,7 @@ export default function IdeaBoard() {
         const known = syncState.current[p.id];
         // 一度も同期していない白紙は送らない（空の「プロジェクト1」がサーバーに増えていくのを防ぐ）
         if (!s && !known && isBlank(p)) continue;
-        if (!s) { await pushOne(p, true); continue; }
+        if (!s) { await pushOne(p); continue; }         // 送る直前にもう一度確かめる
         if (!known) { await pullOne(p.id, p); continue; }
         const dirty = projHash(p) !== known.h;
         const newer = s.savedAt > known.at + SLACK;
@@ -988,16 +1004,16 @@ export default function IdeaBoard() {
         if (dirty) await pushOne(p);
       }
 
-      // まだ開いていない手元のプロジェクトも、サーバーに無ければ送っておく
-      for (const m of projectMetas) {
+      // まだ開いていない手元のプロジェクトも、サーバーに無ければ送っておく（全件の一覧を取ったときだけ）
+      for (const m of full ? projectMetas : []) {
         if (!syncedOn(m.id) || onServer.has(m.id) || projectsRef.current.some((p) => p.id === m.id)) continue;
         try {
+          if (await projectHead(cloud, m.id)) continue;  // サーバーにある。開いたときに突き合わせる
           const raw = await storeGet(projKey(m.id));
           if (raw) await pushOne(JSON.parse(raw), true);
         } catch (e) { /* 読めないものは飛ばす */ }
       }
       reconciled.current = true;
-      refreshCloudProjects(cloud);
     } catch (e) {
       /* 電波が無いなど。次の機会にやり直す */
     } finally {
@@ -1019,7 +1035,7 @@ export default function IdeaBoard() {
           const known = syncState.current[p.id];
           if (known && projHash(p) === known.h) continue;   // 変わっていない
           if (!known && isBlank(p)) continue;               // 何か書くまでは送らない
-          await pushOne(p, !known);
+          await pushOne(p);
         }
       } catch (e) {
         /* 電波が無いなど。次の編集か定期の突き合わせで送る */
@@ -1039,7 +1055,8 @@ export default function IdeaBoard() {
   // 他の端末で更新されていないか、定期的に確かめる
   useEffect(() => {
     if (!cloud) return;
-    const id = setInterval(() => reconcile(), shareOpen ? 10000 : 60000);
+    if (shareOpen) reconcile(true);
+    const id = setInterval(() => reconcile(false), shareOpen ? 10000 : 60000);
     return () => clearInterval(id);
   }, [cloud, shareOpen]);
 
