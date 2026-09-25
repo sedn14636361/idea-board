@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import {
   loadCloudConf, saveCloudConf, cloudTest, cloudList, cloudRemove, loadCloudDraft, saveCloudDraft,
-  projectPush, projectList, projectPull, projectRemove,
+  projectList, projectPushSplit, projectPullSplit, projectRemoveSplit, projectHead, hashOf,
   cloudDiagnose, makeRoomKey, FIRESTORE_RULES, tagsPush, tagsPull,
 } from "./cloud.js";
 import { APP_VERSION } from "./version.js";
@@ -533,6 +533,7 @@ export default function IdeaBoard() {
   // ---- 復元ポイント（自動バックアップ） ----
   // プロジェクトごとにスナップショットを残し、あとから戻せるようにする
   const lastBackupAt = useRef({});
+  const [keepFail, setKeepFail] = useState(null);   // 控えを残せず上書きを止めたプロジェクト { id, name }
 
   const loadBackups = async (pid) => {
     try {
@@ -557,11 +558,16 @@ export default function IdeaBoard() {
     return [];
   };
 
+  // 控えを1件足す。書いたあと読み戻して、本当に残っているかを返す。
+  // writeBackups は容量に入らないと古いものから捨て、最後は何も書かずに終わるので、戻り値だけでは信用できない。
   const makeBackup = async (pid, payload, label) => {
     const list = await loadBackups(pid);
-    const saved = await writeBackups(pid, [...list, { t: Date.now(), label: label || "自動保存", data: payload }]);
-    lastBackupAt.current[pid] = Date.now();
+    const entry = { t: Date.now(), label: label || "自動保存", data: payload };
+    const saved = await writeBackups(pid, [...list, entry]);
     if (pid === currentProjectId) setBackups(saved.map(({ t, label }) => ({ t, label })));
+    const kept = (await loadBackups(pid)).some((b) => b.t === entry.t && b.data === payload);
+    if (kept) lastBackupAt.current[pid] = Date.now();
+    return kept;
   };
 
   const maybeBackup = (pid, payload) => {
@@ -588,7 +594,10 @@ export default function IdeaBoard() {
       action: async () => {
         try {
           const cur = projects.find((p) => p.id === pid);
-          if (cur) await makeBackup(pid, JSON.stringify(cur), "復元前");
+          if (cur && !(await makeBackup(pid, JSON.stringify(cur), "復元前"))) {
+            setKeepFail({ id: pid, name: cur.name });
+            return;
+          }
           const data = JSON.parse(entry.data);
           const bs = (data.boards || []).map(normalizeBoard);
           const boards = bs.length > 0 ? bs : [makeBoard("ボード1")];
@@ -646,7 +655,6 @@ export default function IdeaBoard() {
   const [cloudMsg, setCloudMsg] = useState("");
   const [cloudItems, setCloudItems] = useState([]); // クラウドに届いている付箋
   const [cloudProjects, setCloudProjects] = useState([]); // クラウドにあるプロジェクト一覧
-  const [cloudShared, setCloudShared] = useState([]);     // クラウドで共有しているプロジェクトのID
   const [cloudProjMsg, setCloudProjMsg] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);   // 届いた付箋の確認画面
   const [previewPicked, setPreviewPicked] = useState([]);  // 貼るものとして選んだID
@@ -803,71 +811,302 @@ export default function IdeaBoard() {
     return "ブラウザ";
   };
 
+  // 一覧を取り直す。電波が無いときは null を返す（「サーバーに何も無い」と区別するため）
   const refreshCloudProjects = async (conf = cloud) => {
-    if (!conf) return;
+    if (!conf) return null;
     try {
-      setCloudProjects(await projectList(conf));
-    } catch (e) { /* つながらないときは何もしない */ }
+      const list = await projectList(conf);
+      setCloudProjects(list);
+      return list;
+    } catch (e) { return null; }
   };
 
+  // ---- サーバーを正とする保存 ----
+  // クラウドを設定していれば、すべてのプロジェクトをサーバーに置く（既定）。
+  // 手元(localStorage)は控え。電波が無くても使え、戻ったら同期する。
+  // プロジェクト単位で「サーバーに置かない」を選ぶこともできる（cloudOptOut）。
+  //
+  // syncState[pid] = { h: 最後に同期した中身の指紋, at: そのときのサーバー更新時刻 }
+  //   再起動をまたいで「手元に未送信の編集があるか」「サーバーが新しいか」を判断するために保存する。
+  //   h が今の中身と違えば「手元に未送信の編集がある」、サーバーの savedAt が at より新しければ
+  //   「他の端末が更新した」。両方なら競合なので、黙って上書きせず利用者に選んでもらう。
+  const [cloudOptOut, setCloudOptOut] = useState([]);
+  const [syncConflict, setSyncConflict] = useState(null);   // { id, name, device }
+  const syncState = useRef({});
+  const pushHashes = useRef({});     // ボードごとの指紋（変わったボードだけ送るため）
+  const reconciled = useRef(false);  // 起動後にサーバーと突き合わせ終えたか。終わるまでは送らない
+  const syncLoaded = useRef(false);  // 同期の記録を読み終えたか。終わるまでは突き合わせもしない
+  const syncBusy = useRef(false);
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const optOutRef = useRef(cloudOptOut);
+  optOutRef.current = cloudOptOut;
+  const curPidRef = useRef(currentProjectId);
+  curPidRef.current = currentProjectId;
+
+  // サーバーの版が、この端末が最後に同期したときのままか。
+  // 比べるのはサーバーが付けた updateTime。端末の時計（savedAt）の大小で比べると、時計がずれた端末の
+  // 新しい編集を「古い」と取り違えて黙って上書きしてしまう（6.0.2 までで再現済み）。
+  // 6.0.2 までの記録は updateTime を持たないので、savedAt が**同じ値か**で比べる（大小は比べない）。
+  // 書き込むたびに savedAt は書いた端末の値に置き換わるので、同じ値なら誰も書いていない。
+  const sameVersion = (server, known) =>
+    known.ut ? server.updateTime === known.ut : server.savedAt === known.at;
+  const syncedOn = (pid) => !!cloud && !optOutRef.current.includes(pid);
+  const cloudShared = cloud ? allMetas.map((m) => m.id).filter((id) => !cloudOptOut.includes(id)) : [];
+  const projHash = (p) => hashOf(JSON.stringify(p));
+  // 新しい端末で自動的に作られる白紙のプロジェクトか。
+  // 中身が空でも、名前を付けたもの（利用者が作ったもの）は白紙と見なさない。片づけられて消えないように。
+  const isBlank = (p) =>
+    /^プロジェクト\d*$/.test(p.name || "") &&
+    (p.boards || []).length <= 1 &&
+    (p.boards || []).every((b) =>
+      /^ボード\d*$/.test(b.title || "") &&
+      ["notes", "edges", "texts", "zones", "strokes", "images"].every((k) => !(b[k] || []).length));
+  const persistSync = () => storeSet("idea-board-sync-state", JSON.stringify(syncState.current)).catch(() => {});
+
+  // 同期の記録を読んでから突き合わせる。
+  // 記録が空のまま突き合わせると、すべてを「この端末では初めて」と見なしてサーバーで上書きしてしまい、
+  // オフラインのあいだに書いた編集が手元から消える（復元ポイントには残るが、利用者は気づけない）。
   useEffect(() => {
     if (!cloud) return;
-    refreshCloudProjects();
-    storeGet("idea-board-cloud-shared").then((v) => {
-      if (v) { try { setCloudShared(JSON.parse(v)); } catch (e) {} }
-    });
+    syncLoaded.current = false;
+    reconciled.current = false;
+    (async () => {
+      try { const v = await storeGet("idea-board-sync-state"); syncState.current = v ? JSON.parse(v) : {}; } catch (e) {}
+      try {
+        const v = await storeGet("idea-board-cloud-optout");
+        const ids = v ? JSON.parse(v) : [];
+        optOutRef.current = ids;          // state の反映を待たずに、すぐ使えるようにする
+        setCloudOptOut(ids);
+      } catch (e) {}
+      syncLoaded.current = true;
+      reconcile();
+    })();
   }, [cloud]);
 
   useEffect(() => {
     if (!loaded) return;
-    storeSet("idea-board-cloud-shared", JSON.stringify(cloudShared)).catch(() => {});
-  }, [cloudShared, loaded]);
+    storeSet("idea-board-cloud-optout", JSON.stringify(cloudOptOut)).catch(() => {});
+  }, [cloudOptOut, loaded]);
 
-  // 共有しているプロジェクトは、編集が落ち着いたらクラウドへ上げる
-  const pushProjectToCloud = async (pid, silent) => {
-    const p = projects.find((x) => x.id === pid);
-    if (!p || !cloud) return;
-    try {
-      const r = await projectPush(cloud, p, deviceName());
-      if (r.ok) {
-        cloudSavedAt.current[pid] = Date.now();
-        setCloudShared((ids) => (ids.includes(pid) ? ids : [...ids, pid]));
-        // うまくいったときは何も言わない。伝える必要があるときだけ出す
-        setCloudProjMsg(r.dropped ? "画像は大きいため除いて共有しています" : "");
-        refreshCloudProjects();
-      } else if (r.tooBig && !silent) {
-        setCloudProjMsg("大きすぎて共有できません（画像を減らしてください）");
+  // サーバーから読んだものを、画面に出せる形に組み立てる
+  const buildPulled = (id, r) => {
+    const data = r.project;
+    const bs = (data.boards || []).map(normalizeBoard);
+    const boards = bs.length > 0 ? bs : [makeBoard("ボード1")];
+    return {
+      ...data,
+      id,
+      boards,
+      currentBoardId: boards.some((b) => b.id === data.currentBoardId) ? data.currentBoardId : boards[0].id,
+    };
+  };
+
+  // サーバーから読んだものを画面に反映する（位置もそのまま再現される）
+  const applyPulled = (id, r, built) => {
+    const proj = built || buildPulled(id, r);
+    pushHashes.current[id] = r.hashes || {};
+    syncState.current[id] = { h: projHash(proj), at: r.savedAt, ut: r.updateTime };
+    persistSync();
+    setProjects((ps) => (ps.some((p) => p.id === id) ? ps.map((p) => (p.id === id ? proj : p)) : [...ps, proj]));
+    setProjectMetas((ms) => (ms.some((m) => m.id === id) ? ms.map((m) => (m.id === id ? metaOf(proj) : m)) : [...ms, metaOf(proj)]));
+    return proj;
+  };
+
+  // サーバーから読み、手元を置き換える。
+  // 手元の内容が違うときは、**控えを残せたと確かめてから**置き換える。残せなければ置き換えない。
+  // 「手元は前回同期したまま」でも控えは省かない。他の端末が「この端末の方」を選ぶと、
+  // サーバー上の同じ版は上書きされ、この端末の手元にしか残っていないことがあるため。
+  const pullOne = async (id, local) => {
+    const r = await projectPullSplit(cloud, id);
+    if (!r || !r.project) return null;
+    const proj = buildPulled(id, r);
+    if (local && projHash(local) !== projHash(proj)) {
+      const kept = await makeBackup(id, JSON.stringify(local), "サーバーから読み込む前").catch(() => false);
+      if (!kept) {
+        setKeepFail({ id, name: local.name });
+        return null;
       }
+    }
+    if (keepFail?.id === id) setKeepFail(null);
+    if (syncConflict?.id === id) setSyncConflict(null);
+    return applyPulled(id, r, proj);
+  };
+
+  // サーバーへ送る。**目次の書き換えは必ず条件つき**（サーバーの版が見たときのままなら書く／まだ無ければ書く）。
+  // 確かめてから書くまでの間に他の端末が書いても、条件が合わずに書き換えは起きない。
+  //   mode = "check"    … サーバーを確かめ、この端末が最後に同期した版のままなら送る（ふだん）
+  //   mode = "absent"   … サーバーに無いと確かめた直後。まだ無ければ送る
+  //   mode = "override" … 利用者が競合で「この端末の方」を選んだ。今サーバーにある版を、この版で置き換える
+  const pushOne = async (p, mode = "check") => {
+    const known = syncState.current[p.id];
+    let expect;
+    if (mode === "absent") expect = { exists: false };
+    else {
+      const head = await projectHead(cloud, p.id);
+      if (!head) expect = { exists: false };
+      else if (mode === "override") expect = { updateTime: head.updateTime };
+      else if (!known || !sameVersion(head, known)) {
+        // 他の端末が更新している（または、この端末で一度も同期していないのにサーバーにある）
+        setSyncConflict({ id: p.id, name: p.name, device: head.device });
+        return false;
+      } else expect = { updateTime: head.updateTime };
+    }
+    const r = await projectPushSplit(cloud, p, deviceName(), pushHashes.current[p.id] || {}, expect);
+    if (!r.ok) {
+      // 条件が合わなかった＝確かめた直後に他の端末が書いた。書き換えていないので、改めて尋ねる
+      if (r.conflict) {
+        const head = await projectHead(cloud, p.id).catch(() => null);
+        setSyncConflict({ id: p.id, name: p.name, device: head?.device || "" });
+      }
+      return false;
+    }
+    pushHashes.current[p.id] = r.hashes;
+    syncState.current[p.id] = { h: projHash(p), at: r.savedAt, ut: r.updateTime };
+    persistSync();
+    if (syncConflict?.id === p.id) setSyncConflict(null);
+    return true;
+  };
+
+  // 手元とサーバーを突き合わせる。
+  //   手元だけ変わった → 送る / サーバーだけ新しい → 読む / 両方変わった → 利用者に選んでもらう
+  //   この端末でまだ一度も同期していないものは、サーバーにあればサーバーを正とする（手元は復元ポイントへ）
+  //   サーバーに無いものは送る（初めてクラウドを設定したときの移行）
+  // full: 全件の一覧を取る（起動時・プロジェクトを開いたとき・パネルを開いたとき）。
+  // そうでなければ、開いているプロジェクトの目次だけ確かめる（定期の確認）。
+  // 一覧は全ページ読むので文書の数だけ読み取りが増え、定期に回すと Firestore の無料枠を使い切る。
+  const reconcile = async (full = true) => {
+    if (!cloud || !syncLoaded.current || syncBusy.current) return;
+    syncBusy.current = true;
+    try {
+      let list = [];
+      const onServer = new Map();
+      if (full) {
+        list = await refreshCloudProjects(cloud);
+        if (list === null) return;                     // つながらない・失敗。手元のまま続ける
+        for (const x of list) onServer.set(x.id, x);
+      } else {
+        for (const p of projectsRef.current) {
+          if (!syncedOn(p.id)) continue;
+          const h = await projectHead(cloud, p.id);    // 失敗は例外になり、この回は中断する
+          if (h) onServer.set(p.id, { id: p.id, ...h });
+        }
+      }
+
+      // この端末が白紙のプロジェクトしか持っていないなら、サーバーの最新を開く。
+      // 新しい端末でHTMLを開いたとき、自分のデータがそのまま出るようにするため。
+      const cur = projectsRef.current.find((p) => p.id === curPidRef.current);
+      if (cur && isBlank(cur) && !syncState.current[cur.id] && !onServer.has(cur.id) && list.length > 0) {
+        const latest = list[0];                                   // 新しい順に並んでいる
+        const r = await projectPullSplit(cloud, latest.id);
+        if (r && r.project) {
+          const proj = applyPulled(latest.id, r);
+          // 白紙は片づける（中身が無いので失うものは無い）
+          setProjects((ps) => ps.filter((p) => p.id !== cur.id));
+          setProjectMetas((ms) => ms.filter((m) => m.id !== cur.id));
+          storeDelete(projKey(cur.id)).catch(() => {});
+          projectsRef.current = [...projectsRef.current.filter((p) => p.id !== cur.id && p.id !== latest.id), proj];
+          setCurrentProjectId(latest.id);
+          resetViewState();
+        }
+      }
+
+      for (const p of projectsRef.current) {
+        if (!syncedOn(p.id)) continue;
+        const s = onServer.get(p.id);
+        const known = syncState.current[p.id];
+        // 一度も同期していない白紙は送らない（空の「プロジェクト1」がサーバーに増えていくのを防ぐ）
+        if (!s && !known && isBlank(p)) continue;
+        if (!s) { await pushOne(p); continue; }         // 送る直前にもう一度確かめる
+        if (!known) { await pullOne(p.id, p); continue; }
+        const dirty = projHash(p) !== known.h;
+        const newer = !sameVersion(s, known);
+        if (newer && dirty) { setSyncConflict({ id: p.id, name: p.name, device: s.device }); continue; }
+        if (newer) { await pullOne(p.id, p); continue; }
+        if (dirty) await pushOne(p);
+      }
+
+      // まだ開いていない手元のプロジェクトも、サーバーに無ければ送っておく（全件の一覧を取ったときだけ）
+      for (const m of full ? projectMetas : []) {
+        if (!syncedOn(m.id) || onServer.has(m.id) || projectsRef.current.some((p) => p.id === m.id)) continue;
+        try {
+          if (await projectHead(cloud, m.id)) continue;  // サーバーにある。開いたときに突き合わせる
+          const raw = await storeGet(projKey(m.id));
+          if (raw) await pushOne(JSON.parse(raw), "absent");
+        } catch (e) { /* 読めないものは飛ばす */ }
+      }
+      reconciled.current = true;
     } catch (e) {
-      if (!silent) setCloudProjMsg("共有できませんでした");
+      /* 電波が無いなど。次の機会にやり直す */
+    } finally {
+      syncBusy.current = false;
     }
   };
 
+  // 編集が落ち着いたら、変わったプロジェクトをサーバーへ送る。
+  // 起動直後の突き合わせが終わるまでは送らない（サーバーの新しい中身を古い手元で上書きしないため）。
   useEffect(() => {
-    if (!loaded || !cloud || !cloudShared.includes(currentProjectId)) return;
-    const t = setTimeout(() => pushProjectToCloud(currentProjectId, true), 8000);
+    if (!loaded || !cloud) return;
+    const t = setTimeout(async () => {
+      if (!reconciled.current) { reconcile(); return; }
+      if (syncBusy.current) return;
+      syncBusy.current = true;
+      try {
+        for (const p of projectsRef.current) {
+          if (!syncedOn(p.id)) continue;
+          const known = syncState.current[p.id];
+          if (known && projHash(p) === known.h) continue;   // 変わっていない
+          if (!known && isBlank(p)) continue;               // 何か書くまでは送らない
+          await pushOne(p);
+        }
+      } catch (e) {
+        /* 電波が無いなど。次の編集か定期の突き合わせで送る */
+      } finally {
+        syncBusy.current = false;
+      }
+    }, 3000);
     return () => clearTimeout(t);
-  }, [projects, currentProjectId, cloudShared, cloud, loaded]);
+  }, [projects, cloud, loaded, cloudOptOut]);
 
-  // クラウドからプロジェクトを取り込む（位置もそのまま再現される）
+  // プロジェクトを開いたら、そのプロジェクトがサーバーで更新されていないか確かめる
+  useEffect(() => {
+    if (!loaded || !cloud || !currentProjectId) return;
+    reconcile();
+  }, [currentProjectId]);
+
+  // 他の端末で更新されていないか、定期的に確かめる
+  useEffect(() => {
+    if (!cloud) return;
+    if (shareOpen) reconcile(true);
+    const id = setInterval(() => reconcile(false), shareOpen ? 10000 : 60000);
+    return () => clearInterval(id);
+  }, [cloud, shareOpen]);
+
+  // 「同期する」ボタン／サーバーに置き直す
+  const pushProjectToCloud = async (pid) => {
+    const p = projects.find((x) => x.id === pid);
+    if (!p || !cloud) return;
+    setCloudOptOut((ids) => ids.filter((x) => x !== pid));
+    optOutRef.current = optOutRef.current.filter((x) => x !== pid);
+    setCloudProjMsg("送っています…");
+    try {
+      const ok = await pushOne(p);
+      setCloudProjMsg(ok ? "" : "他の端末で更新されています。上の案内から選んでください");
+      refreshCloudProjects();
+    } catch (e) {
+      setCloudProjMsg("送れませんでした（電波を確認してください）");
+    }
+  };
+
+  // サーバーからプロジェクトを開く
   const pullProjectFromCloud = async (id) => {
     if (!cloud) return;
     setCloudProjMsg("読み込み中…");
     try {
-      const r = await projectPull(cloud, id);
-      if (!r || !r.project) { setCloudProjMsg("読み込めませんでした"); return; }
-      const data = r.project;
-      const bs = (data.boards || []).map(normalizeBoard);
-      const boards = bs.length > 0 ? bs : [makeBoard("ボード1")];
-      const proj = {
-        ...data,
-        boards,
-        currentBoardId: boards.some((b) => b.id === data.currentBoardId) ? data.currentBoardId : boards[0].id,
-      };
-      cloudSavedAt.current[id] = r.savedAt;
-      setProjects((ps) => (ps.some((p) => p.id === id) ? ps.map((p) => (p.id === id ? proj : p)) : [...ps, proj]));
-      setProjectMetas((ms) => (ms.some((m) => m.id === id) ? ms.map((m) => (m.id === id ? metaOf(proj) : m)) : [...ms, metaOf(proj)]));
-      setCloudShared((ids) => (ids.includes(id) ? ids : [...ids, id]));
+      const local = projects.find((p) => p.id === id);
+      const proj = await pullOne(id, local);
+      if (!proj) { setCloudProjMsg("読み込めませんでした"); return; }
+      setCloudOptOut((ids) => ids.filter((x) => x !== id));
       setCurrentProjectId(id);
       resetViewState();
       setCloudProjMsg("");
@@ -878,29 +1117,39 @@ export default function IdeaBoard() {
     }
   };
 
+  // 競合したとき、こちらの内容でサーバーを上書きする
+  const keepLocalVersion = async (id) => {
+    const p = projects.find((x) => x.id === id);
+    if (!p) return;
+    try {
+      // 送れなかった（入れ違いで他の端末が書いた・電波が無い）ときは案内を残す。消すと保存されたと誤解させる
+      if (await pushOne(p, "override")) setSyncConflict(null);
+      else setCloudProjMsg("送れませんでした。もう一度選んでください");
+    } catch (e) {
+      setCloudProjMsg("送れませんでした（電波を確認してください）");
+    }
+  };
+
+  // このプロジェクトをサーバーに置かない（このパソコンの中身は残る）
   const unshareProject = async (id) => {
     if (!cloud) return;
     setConfirmBox({
-      message: "このプロジェクトの共有をやめます。\n他のパソコンからは開けなくなります（このパソコンの中身は残ります）。",
-      okLabel: "共有をやめる",
+      message: "このプロジェクトをサーバーから消し、このパソコンだけに置きます。\n他の端末からは開けなくなります（このパソコンの中身は残ります）。",
+      okLabel: "サーバーから消す",
       action: async () => {
-        await projectRemove(cloud, id);
-        setCloudShared((ids) => ids.filter((x) => x !== id));
+        setCloudOptOut((ids) => (ids.includes(id) ? ids : [...ids, id]));
+        optOutRef.current = [...optOutRef.current, id];
+        await projectRemoveSplit(cloud, id, pushHashes.current[id]?.__parts || {}).catch(() => {});
+        delete syncState.current[id];
+        delete pushHashes.current[id];
+        persistSync();
         refreshCloudProjects();
       },
     });
   };
 
-  // 他のパソコンで更新されていないか確かめる
-  useEffect(() => {
-    if (!cloud) return;
-    const id = setInterval(() => refreshCloudProjects(), shareOpen ? 10000 : 90000);
-    return () => clearInterval(id);
-  }, [cloud, shareOpen]);
-
-  const cloudNewer = cloudProjects.find(
-    (x) => x.id === currentProjectId && x.savedAt > (cloudSavedAt.current[currentProjectId] || 0) + 5000
-  );
+  // 競合中のもの（パネルの案内に使う）
+  const cloudNewer = syncConflict && syncConflict.id === currentProjectId ? syncConflict : null;
 
   // 届いた付箋を確認する画面を開く（このプロジェクト宛てのものを最初から選んでおく）
   const openPreview = () => {
@@ -1259,13 +1508,13 @@ export default function IdeaBoard() {
     });
   };
 
-  const exportProject = () => {
-    if (!project) return;
+  const exportProject = (target = project) => {
+    if (!target) return;
     try {
-      const blob = new Blob([JSON.stringify({ ideaboardProject: 1, ...project }, null, 2)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify({ ideaboardProject: 1, ...target }, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${(project.name || "project").replace(/[\\/:*?"<>|]/g, "_")}.json`;
+      a.download = `${(target.name || "project").replace(/[\\/:*?"<>|]/g, "_")}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } catch (e) {
@@ -3497,7 +3746,7 @@ export default function IdeaBoard() {
                     title="今の状態を復元ポイントとして残す"
                     onClick={async () => {
                       const cur = projects.find((p) => p.id === currentProjectId);
-                      if (cur) await makeBackup(currentProjectId, JSON.stringify(cur), "手動");
+                      if (cur && !(await makeBackup(currentProjectId, JSON.stringify(cur), "手動"))) setKeepFail({ id: cur.id, name: cur.name });
                     }}
                     style={{ marginLeft: "auto", border: "1px solid #C9C2B2", borderRadius: 5, background: "transparent", color: "#3E3A33", fontSize: 10, padding: "2px 7px", cursor: "pointer" }}
                   >
@@ -3532,7 +3781,7 @@ export default function IdeaBoard() {
               <div style={{ borderTop: "1px solid #E4DFD2", paddingTop: 8, display: "flex", gap: 6 }}>
                 <button
                   title="現在のプロジェクトをJSONファイルに保存"
-                  onClick={exportProject}
+                  onClick={() => exportProject()}
                   style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: "transparent", fontSize: 11, padding: "4px 0", cursor: "pointer", color: "#3E3A33" }}
                 >
                   ファイルへ保存
@@ -4023,16 +4272,15 @@ export default function IdeaBoard() {
                 {cloud && (
                   <div style={{ borderTop: "1px solid #E4DFD2", marginTop: 10, paddingTop: 10 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
-                      パソコン同士で共有
+                      サーバーに保存
                     </div>
                     <div style={{ fontSize: 10.5, color: "#9C9587", lineHeight: 1.7, marginBottom: 6 }}>
-                      共有すると、別のパソコンからも同じボードを開けます（付箋の位置もそのままです）。
                     </div>
 
                     {cloudShared.includes(currentProjectId) ? (
                       <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 10.5, color: "#4C7A4C", fontWeight: 700, marginBottom: 5 }}>
-                          ● このプロジェクトを共有中
+                          ● サーバーに保存しています
                         </div>
                         <div style={{ display: "flex", gap: 5 }}>
                           <button
@@ -4045,7 +4293,7 @@ export default function IdeaBoard() {
                             onClick={() => unshareProject(currentProjectId)}
                             style={{ border: "none", background: "transparent", color: "#B0483C", fontSize: 10.5, padding: "5px 8px", cursor: "pointer" }}
                           >
-                            やめる
+                            サーバーに置かない
                           </button>
                         </div>
                       </div>
@@ -4054,28 +4302,36 @@ export default function IdeaBoard() {
                         onClick={() => pushProjectToCloud(currentProjectId)}
                         style={{ width: "100%", border: "none", borderRadius: 5, background: "#4C7A4C", color: "#FFFDF6", fontSize: 11, fontWeight: 700, padding: "6px 0", cursor: "pointer", marginBottom: 6 }}
                       >
-                        このプロジェクトを共有する
+                        サーバーに保存する
                       </button>
                     )}
 
                     {cloudNewer && (
                       <div style={{ background: "#FFF3D6", borderRadius: 5, padding: "6px 8px", marginBottom: 6 }}>
                         <div style={{ fontSize: 10.5, color: "#8A6A1F", lineHeight: 1.6, marginBottom: 4 }}>
-                          「{cloudNewer.device}」で更新されています。読み込むと、こちらの変更は置き換わります。
+                          「{cloudNewer.device}」とこの端末の両方で変更されています。どちらを残しますか？
                         </div>
-                        <button
-                          onClick={() => pullProjectFromCloud(currentProjectId)}
-                          style={{ width: "100%", border: "none", borderRadius: 5, background: "#8A6A1F", color: "#FFFDF6", fontSize: 10.5, fontWeight: 700, padding: "5px 0", cursor: "pointer" }}
-                        >
-                          読み込む
-                        </button>
+                        <div style={{ display: "flex", gap: 5 }}>
+                          <button
+                            onClick={() => pullProjectFromCloud(currentProjectId)}
+                            style={{ flex: 1, border: "none", borderRadius: 5, background: "#8A6A1F", color: "#FFFDF6", fontSize: 10.5, fontWeight: 700, padding: "5px 0", cursor: "pointer" }}
+                          >
+                            サーバーの方
+                          </button>
+                          <button
+                            onClick={() => keepLocalVersion(currentProjectId)}
+                            style={{ flex: 1, border: "1px solid #8A6A1F", borderRadius: 5, background: "transparent", color: "#8A6A1F", fontSize: 10.5, fontWeight: 700, padding: "5px 0", cursor: "pointer" }}
+                          >
+                            この端末の方
+                          </button>
+                        </div>
                       </div>
                     )}
 
                     {cloudProjects.filter((x) => !allMetas.some((m) => m.id === x.id)).length > 0 && (
                       <>
                         <div style={{ fontSize: 10, color: "#9C9587", marginBottom: 3 }}>
-                          別のパソコンにあるプロジェクト
+                          サーバーにある、まだ開いていないプロジェクト
                         </div>
                         {cloudProjects.filter((x) => !allMetas.some((m) => m.id === x.id)).map((x) => (
                           <button
@@ -6086,6 +6342,60 @@ export default function IdeaBoard() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 控えを残せず、上書きを止めた */}
+      {keepFail && (
+        <div
+          style={{
+            position: "fixed", left: "50%", top: 52, transform: "translateX(-50%)", zIndex: 200002,
+            background: "#FBE3DF", borderRadius: 10, boxShadow: "0 6px 20px rgba(30,25,15,.35)",
+            padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, maxWidth: "92vw", flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "#A23A2E" }}>
+            空き容量が足りず「{keepFail.name}」の控えを残せないため、上書きを止めました。
+          </span>
+          <button
+            onClick={() => exportProject(projects.find((p) => p.id === keepFail.id))}
+            style={{ border: "none", borderRadius: 6, background: "#A23A2E", color: "#FFFDF6", fontSize: 12, fontWeight: 700, padding: "5px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
+          >
+            ファイルへ保存
+          </button>
+          <button
+            onClick={() => setKeepFail(null)}
+            style={{ border: "none", background: "transparent", color: "#A23A2E", fontSize: 14, cursor: "pointer", padding: "0 4px" }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* サーバーとこの端末の両方で変更された（パネルを開いていなくても気づけるように） */}
+      {syncConflict && syncConflict.id === currentProjectId && !shareOpen && (
+        <div
+          style={{
+            position: "fixed", left: "50%", top: 52, transform: "translateX(-50%)", zIndex: 200001,
+            background: "#FFF3D6", borderRadius: 10, boxShadow: "0 6px 20px rgba(30,25,15,.35)",
+            padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, maxWidth: "92vw", flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "#8A6A1F" }}>
+            「{syncConflict.device}」とこの端末の両方で変更されています。どちらを残しますか？
+          </span>
+          <button
+            onClick={() => pullProjectFromCloud(syncConflict.id)}
+            style={{ border: "none", borderRadius: 6, background: "#8A6A1F", color: "#FFFDF6", fontSize: 12, fontWeight: 700, padding: "5px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
+          >
+            サーバーの方
+          </button>
+          <button
+            onClick={() => keepLocalVersion(syncConflict.id)}
+            style={{ border: "1px solid #8A6A1F", borderRadius: 6, background: "transparent", color: "#8A6A1F", fontSize: 12, fontWeight: 700, padding: "5px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
+          >
+            この端末の方
+          </button>
         </div>
       )}
 
