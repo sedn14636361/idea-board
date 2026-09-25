@@ -194,41 +194,51 @@ export function hashOf(str) {
   return h.toString(36) + "-" + str.length.toString(36);
 }
 
-const partId = (pid, bid, i) => `__b_${pid}_${bid}_${i}`;
+// かけらの名前。v は書き込みごとの版の印（旧形式のかけらは v なし）。
+// **かけらは毎回新しい名前で書き、同じ名前に上書きしない**。
+// 同じ名前に上書きすると、送信が途中で切れたときや2台が同時に送ったときに新旧のかけらが混ざり、
+// 「どちらの版でもない」中身がエラーも出ずに読めてしまう（6.0.2 までで再現済み）。
+const partId = (pid, bid, i, v) => (v ? `__b_${pid}_${bid}_${v}_${i}` : `__b_${pid}_${bid}_${i}`);
+const newVersion = () => "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-// サーバーの目次から「前回どのボードを何かけらで、どの指紋で保存したか」を読む
+// サーバーの目次から「今どの版が、どのかけらで保存されているか」を読む
 const headPrev = async (conf, token, pid) => {
-  const r = await fetch(`${projUrl(conf)}/${encodeURIComponent(pid)}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) return { __parts: {} };
-  const d = await r.json();
-  if (d.fields?.shape?.stringValue !== "split") return { __parts: {} };
+  const d = await getDoc(conf, token, pid);
+  if (!d) return { __parts: {}, __v: {}, __ut: null };
+  if (d.fields?.shape?.stringValue !== "split") return { __parts: {}, __v: {}, __ut: d.updateTime || null };
   try {
     const meta = JSON.parse(d.fields.meta.stringValue);
-    const prev = { __parts: {} };
+    const prev = { __parts: {}, __v: {}, __ut: d.updateTime || null };
     for (const m of meta.boards || []) {
       prev.__parts[m.id] = m.parts;
+      prev.__v[m.id] = m.v || "";
       if (m.h) prev[m.id] = m.h;
     }
     return prev;
-  } catch (e) { return { __parts: {} }; }
+  } catch (e) { return { __parts: {}, __v: {}, __ut: d.updateTime || null }; }
 };
 
-const putDoc = async (conf, token, id, fields) => {
-  const url = `${projUrl(conf)}/${encodeURIComponent(id)}`;
-  // PATCH は無ければ作ってくれるので、作成と更新を分けなくてよい
-  const r = await fetch(url, {
+// expect: { updateTime } … サーバーの目次がこの時刻のままなら書く／{ exists: false } … まだ無ければ書く
+const putDoc = async (conf, token, id, fields, expect) => {
+  let q = "";
+  if (expect?.updateTime) q = `?currentDocument.updateTime=${encodeURIComponent(expect.updateTime)}`;
+  else if (expect?.exists === false) q = "?currentDocument.exists=false";
+  const r = await fetch(`${projUrl(conf)}/${encodeURIComponent(id)}${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ fields }),
   });
-  return r.ok;
+  if (!r.ok) return { ok: false, status: r.status };
+  const d = await r.json().catch(() => ({}));
+  return { ok: true, updateTime: d.updateTime || null };
 };
 
 const getDoc = async (conf, token, id) => {
   const r = await fetch(`${projUrl(conf)}/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!r.ok) return null;
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("get " + r.status);   // 失敗を「無い」と取り違えない
   return await r.json();
 };
 
@@ -240,55 +250,81 @@ const delDoc = async (conf, token, id) => {
 };
 
 // プロジェクトを分割して保存する。
-// prev に前回の指紋を渡すと、**中身が変わったボードだけ**書き込む。
-// 返り値の hashes を次回の prev に渡す。
-export async function projectPushSplit(conf, project, device, prev = {}) {
+//   1. 中身が変わったボードだけ、**新しい名前の**かけらに書く（今の版のかけらには触らない）
+//   2. 目次を、expect の条件つきで書き換える。ここで初めて新しい版に切り替わる
+//      条件が合わない（他の端末が先に書いた）ときは切り替えず、書いたかけらを片づけて { ok:false, conflict:true }
+//   3. 切り替えたあとで、使われなくなった古いかけらを消す
+// どこで切れても、目次はどちらかの版を丸ごと指している。
+// prev に前回の記録（hashes）を渡すと、変わっていないボードを送り直さない。無ければサーバーの目次から読む。
+export async function projectPushSplit(conf, project, device, prev = {}, expect = null) {
   const token = await signIn(conf);
-  // 前回の記録が無い（再起動した直後など）ときは、サーバーの目次から復元する。
-  // こうしないと、変わっていないボードまで送り直し、消したボードのかけらがサーバーに取り残される。
-  if (!prev.__parts) prev = await headPrev(conf, token, project.id);
+  // 変わっていないボードは、今の版のかけらを使い回す。使い回してよいのは、手元の記録（prev）が
+  // **サーバーの今の版と同じ**だと分かっているときだけ。他の端末が書き換えたあと（競合で上書きするとき）は、
+  // 記録にあるかけらがもう消されていることがあり、使い回すと目次が無いかけらを指して読めなくなる。
+  if (expect?.exists === false) prev = { __parts: {}, __v: {}, __ut: null };          // サーバーに無い。全部書く
+  else if (!prev.__parts || !prev.__v || (expect?.updateTime && prev.__ut !== expect.updateTime)) {
+    prev = await headPrev(conf, token, project.id);
+    if (expect?.updateTime && prev.__ut !== expect.updateTime) return { ok: false, conflict: true };   // 確かめた直後に書き換わった
+  }
   const boards = project.boards || [];
-  const hashes = {};
+  const hashes = { __parts: {}, __v: {}, __ut: null };
   const metaBoards = [];
+  const written = [];                            // 今回書いたかけら（切り替えに失敗したら消す）
 
-  for (const b of boards) {
-    const body = JSON.stringify(b);
-    const h = hashOf(body);
-    hashes[b.id] = h;
-    const parts = splitByBytes(body);
-    metaBoards.push({ id: b.id, parts: parts.length, h });
+  const cleanup = async () => { for (const id of written) await delDoc(conf, token, id); };
 
-    if (prev[b.id] === h) continue;              // 変わっていないので書かない
-    for (let i = 0; i < parts.length; i++) {
-      const ok = await putDoc(conf, token, partId(project.id, b.id, i), {
-        part: { stringValue: parts[i] },
-      });
-      if (!ok) return { ok: false };
+  try {
+    for (const b of boards) {
+      const body = JSON.stringify(b);
+      const h = hashOf(body);
+      if (prev[b.id] === h && prev.__parts[b.id]) {
+        // 変わっていない。今の版のかけらをそのまま使う
+        const v = prev.__v[b.id] || "";
+        metaBoards.push({ id: b.id, parts: prev.__parts[b.id], h, ...(v ? { v } : {}) });
+        hashes[b.id] = h; hashes.__parts[b.id] = prev.__parts[b.id]; hashes.__v[b.id] = v;
+        continue;
+      }
+      const v = newVersion();
+      const parts = splitByBytes(body);
+      for (let i = 0; i < parts.length; i++) {
+        const id = partId(project.id, b.id, i, v);
+        written.push(id);
+        const r = await putDoc(conf, token, id, { part: { stringValue: parts[i] } }, { exists: false });
+        if (!r.ok) { await cleanup(); return { ok: false }; }
+      }
+      metaBoards.push({ id: b.id, parts: parts.length, h, v });
+      hashes[b.id] = h; hashes.__parts[b.id] = parts.length; hashes.__v[b.id] = v;
     }
-    // 前より短くなったとき、余ったかけらを消す
-    const before = (prev.__parts && prev.__parts[b.id]) || 0;
-    for (let i = parts.length; i < before; i++) await delDoc(conf, token, partId(project.id, b.id, i));
+  } catch (e) {
+    await cleanup().catch(() => {});
+    throw e;
   }
 
-  // 消えたボードのかけらを片づける
-  for (const [bid, cnt] of Object.entries((prev.__parts || {}))) {
-    if (boards.some((b) => b.id === bid)) continue;
-    for (let i = 0; i < cnt; i++) await delDoc(conf, token, partId(project.id, bid, i));
-  }
-
-  const savedAt = Date.now();
-  const ok = await putDoc(conf, token, project.id, {
+  const savedAt = Date.now();                    // 表示用。新旧の判断には使わない（端末の時計はずれるため）
+  const head = await putDoc(conf, token, project.id, {
     shape: { stringValue: "split" },
     meta: { stringValue: JSON.stringify({ currentBoardId: project.currentBoardId, boards: metaBoards }) },
     name: { stringValue: project.name || "" },
     device: { stringValue: device || "" },
     savedAt: { integerValue: String(savedAt) },
-  });
-  hashes.__parts = Object.fromEntries(metaBoards.map((m) => [m.id, m.parts]));
-  return { ok, hashes, savedAt };
+  }, expect).catch(() => ({ ok: false }));
+  if (!head.ok) {
+    await cleanup().catch(() => {});
+    return { ok: false, conflict: head.status === 400 || head.status === 409 || head.status === 412 };
+  }
+
+  // 切り替わったので、使われなくなったかけらを消す（失敗しても中身には影響しない）
+  for (const [bid, cnt] of Object.entries(prev.__parts || {})) {
+    const stillSame = metaBoards.some((m) => m.id === bid && (m.v || "") === (prev.__v[bid] || ""));
+    if (stillSame) continue;
+    for (let i = 0; i < cnt; i++) await delDoc(conf, token, partId(project.id, bid, i, prev.__v[bid] || ""));
+  }
+  hashes.__ut = head.updateTime;
+  return { ok: true, hashes, savedAt, updateTime: head.updateTime };
 }
 
-// 目次の更新時刻だけを取る。無ければ null（1回の読み取りで済む）
+// 目次の更新時刻だけを取る。無ければ null（1回の読み取りで済む）。
+// updateTime はサーバーが付けた時刻で、書くたびに単調に増える。新旧の判断はこれで行う。
 export async function projectHead(conf, id) {
   const token = await signIn(conf);
   const r = await fetch(
@@ -298,57 +334,65 @@ export async function projectHead(conf, id) {
   if (r.status === 404) return null;
   if (!r.ok) throw new Error("head " + r.status);   // 電波が無いなど。「無い」とは区別する
   const d = await r.json();
-  return { savedAt: Number(d.fields?.savedAt?.integerValue || 0), device: d.fields?.device?.stringValue || "" };
-}
-
-// 分割保存されたプロジェクトを組み立てて返す。
-// 旧形式（payload に丸ごと）で保存されているものもそのまま読める。
-export async function projectPullSplit(conf, id) {
-  const token = await signIn(conf);
-  const head = await getDoc(conf, token, id);
-  if (!head) return null;
-  const f = head.fields || {};
-  const savedAt = Number(f.savedAt?.integerValue || 0);
-  const device = f.device?.stringValue || "";
-
-  // 旧形式
-  if (f.payload?.stringValue) {
-    try {
-      return { project: JSON.parse(f.payload.stringValue), savedAt, device, shape: "whole" };
-    } catch (e) { return null; }
-  }
-  if (f.shape?.stringValue !== "split") return null;
-
-  let meta;
-  try { meta = JSON.parse(f.meta?.stringValue || "{}"); } catch (e) { return null; }
-
-  const boards = [];
-  const parts = {};
-  for (const m of meta.boards || []) {
-    const got = await Promise.all(
-      Array.from({ length: m.parts }, (_, i) => getDoc(conf, token, partId(id, m.id, i)))
-    );
-    if (got.some((g) => !g)) return null;        // 欠けているなら組み立てない
-    const body = got.map((g) => g.fields?.part?.stringValue || "").join("");
-    try { boards.push(JSON.parse(body)); } catch (e) { return null; }
-    parts[m.id] = m.parts;
-  }
-
-  const hashes = Object.fromEntries(boards.map((b) => [b.id, hashOf(JSON.stringify(b))]));
-  hashes.__parts = parts;
   return {
-    project: { id, name: f.name?.stringValue || "", boards, currentBoardId: meta.currentBoardId },
-    savedAt, device, shape: "split", hashes,
+    savedAt: Number(d.fields?.savedAt?.integerValue || 0),
+    device: d.fields?.device?.stringValue || "",
+    updateTime: d.updateTime || null,
   };
 }
 
-// 分割保存されたプロジェクトを、かけらごと消す
-export async function projectRemoveSplit(conf, id, partsByBoard) {
+// 分割保存されたプロジェクトを組み立てて返す。旧形式（payload に丸ごと／版の印の無いかけら）も読める。
+// 目次を読んでからかけらを読むまでの間に他の端末が切り替えると、古いかけらが消えていることがある。
+// そのときは目次から読み直す（どちらかの版を丸ごと返す。混ぜない）。
+export async function projectPullSplit(conf, id) {
   const token = await signIn(conf);
-  // かけらの数が分からないときは目次から知る（消し残しを出さないため）
-  if (!partsByBoard || Object.keys(partsByBoard).length === 0) partsByBoard = (await headPrev(conf, token, id)).__parts;
-  for (const [bid, cnt] of Object.entries(partsByBoard)) {
-    for (let i = 0; i < cnt; i++) await delDoc(conf, token, partId(id, bid, i));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const head = await getDoc(conf, token, id);
+    if (!head) return null;
+    const f = head.fields || {};
+    const savedAt = Number(f.savedAt?.integerValue || 0);
+    const device = f.device?.stringValue || "";
+    const updateTime = head.updateTime || null;
+
+    if (f.payload?.stringValue) {
+      try {
+        return { project: JSON.parse(f.payload.stringValue), savedAt, device, updateTime, shape: "whole" };
+      } catch (e) { return null; }
+    }
+    if (f.shape?.stringValue !== "split") return null;
+
+    let meta;
+    try { meta = JSON.parse(f.meta?.stringValue || "{}"); } catch (e) { return null; }
+
+    const boards = [];
+    const hashes = { __parts: {}, __v: {}, __ut: updateTime };
+    let missing = false;
+    for (const m of meta.boards || []) {
+      const got = await Promise.all(
+        Array.from({ length: m.parts }, (_, i) => getDoc(conf, token, partId(id, m.id, i, m.v || "")))
+      );
+      if (got.some((g) => !g)) { missing = true; break; }
+      const body = got.map((g) => g.fields?.part?.stringValue || "").join("");
+      try { boards.push(JSON.parse(body)); } catch (e) { return null; }
+      hashes[m.id] = m.h || hashOf(body);
+      hashes.__parts[m.id] = m.parts;
+      hashes.__v[m.id] = m.v || "";
+    }
+    if (missing) continue;                       // 読んでいる間に切り替わった。目次から読み直す
+    return {
+      project: { id, name: f.name?.stringValue || "", boards, currentBoardId: meta.currentBoardId },
+      savedAt, device, updateTime, shape: "split", hashes,
+    };
+  }
+  return null;
+}
+
+// 分割保存されたプロジェクトを、かけらごと消す（かけらの数と版の印は目次から知る）
+export async function projectRemoveSplit(conf, id) {
+  const token = await signIn(conf);
+  const prev = await headPrev(conf, token, id);
+  for (const [bid, cnt] of Object.entries(prev.__parts)) {
+    for (let i = 0; i < cnt; i++) await delDoc(conf, token, partId(id, bid, i, prev.__v[bid] || ""));
   }
   await delDoc(conf, token, id);
   return true;
@@ -382,8 +426,10 @@ export async function projectList(conf) {
       name: doc.fields?.name?.stringValue || "（無題）",
       device: doc.fields?.device?.stringValue || "",
       savedAt: Number(doc.fields?.savedAt?.integerValue || 0),
+      updateTime: doc.updateTime || null,
     }))
-    .sort((a, b) => b.savedAt - a.savedAt);
+    // 新しい順。端末の時計（savedAt）ではなく、サーバーの時刻で並べる
+    .sort((a, b) => (Date.parse(b.updateTime || 0) || b.savedAt) - (Date.parse(a.updateTime || 0) || a.savedAt));
 }
 
 export const FIRESTORE_RULES = `rules_version = '2';

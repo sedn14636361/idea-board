@@ -844,14 +844,24 @@ export default function IdeaBoard() {
   const curPidRef = useRef(currentProjectId);
   curPidRef.current = currentProjectId;
 
-  const SLACK = 2000;   // 時計のずれを見込む
+  // サーバーの版が、この端末が最後に同期したときのままか。
+  // 比べるのはサーバーが付けた updateTime。端末の時計（savedAt）の大小で比べると、時計がずれた端末の
+  // 新しい編集を「古い」と取り違えて黙って上書きしてしまう（6.0.2 までで再現済み）。
+  // 6.0.2 までの記録は updateTime を持たないので、savedAt が**同じ値か**で比べる（大小は比べない）。
+  // 書き込むたびに savedAt は書いた端末の値に置き換わるので、同じ値なら誰も書いていない。
+  const sameVersion = (server, known) =>
+    known.ut ? server.updateTime === known.ut : server.savedAt === known.at;
   const syncedOn = (pid) => !!cloud && !optOutRef.current.includes(pid);
   const cloudShared = cloud ? allMetas.map((m) => m.id).filter((id) => !cloudOptOut.includes(id)) : [];
   const projHash = (p) => hashOf(JSON.stringify(p));
-  // 何も書いていない白紙のプロジェクトか（新しい端末で自動的に作られるもの）
+  // 新しい端末で自動的に作られる白紙のプロジェクトか。
+  // 中身が空でも、名前を付けたもの（利用者が作ったもの）は白紙と見なさない。片づけられて消えないように。
   const isBlank = (p) =>
+    /^プロジェクト\d*$/.test(p.name || "") &&
     (p.boards || []).length <= 1 &&
-    (p.boards || []).every((b) => ["notes", "edges", "texts", "zones", "strokes", "images"].every((k) => !(b[k] || []).length));
+    (p.boards || []).every((b) =>
+      /^ボード\d*$/.test(b.title || "") &&
+      ["notes", "edges", "texts", "zones", "strokes", "images"].every((k) => !(b[k] || []).length));
   const persistSync = () => storeSet("idea-board-sync-state", JSON.stringify(syncState.current)).catch(() => {});
 
   // 同期の記録を読んでから突き合わせる。
@@ -896,7 +906,7 @@ export default function IdeaBoard() {
   const applyPulled = (id, r, built) => {
     const proj = built || buildPulled(id, r);
     pushHashes.current[id] = r.hashes || {};
-    syncState.current[id] = { h: projHash(proj), at: r.savedAt };
+    syncState.current[id] = { h: projHash(proj), at: r.savedAt, ut: r.updateTime };
     persistSync();
     setProjects((ps) => (ps.some((p) => p.id === id) ? ps.map((p) => (p.id === id ? proj : p)) : [...ps, proj]));
     setProjectMetas((ms) => (ms.some((m) => m.id === id) ? ms.map((m) => (m.id === id ? metaOf(proj) : m)) : [...ms, metaOf(proj)]));
@@ -923,24 +933,36 @@ export default function IdeaBoard() {
     return applyPulled(id, r, proj);
   };
 
-  // サーバーへ送る（中身が変わったボードだけ）。
-  // 送る直前にサーバーの更新時刻を確かめ、他の端末が先に書いていたら上書きしない。
-  const pushOne = async (p, force = false) => {
-    // 確かめずに送る（force）のは、利用者が「この端末の方」を選んだときと、
-    // たった今サーバーに無いと確かめたときだけ。
-    if (!force) {
+  // サーバーへ送る。**目次の書き換えは必ず条件つき**（サーバーの版が見たときのままなら書く／まだ無ければ書く）。
+  // 確かめてから書くまでの間に他の端末が書いても、条件が合わずに書き換えは起きない。
+  //   mode = "check"    … サーバーを確かめ、この端末が最後に同期した版のままなら送る（ふだん）
+  //   mode = "absent"   … サーバーに無いと確かめた直後。まだ無ければ送る
+  //   mode = "override" … 利用者が競合で「この端末の方」を選んだ。今サーバーにある版を、この版で置き換える
+  const pushOne = async (p, mode = "check") => {
+    const known = syncState.current[p.id];
+    let expect;
+    if (mode === "absent") expect = { exists: false };
+    else {
       const head = await projectHead(cloud, p.id);
-      const known = syncState.current[p.id];
-      // この端末で一度も同期していないのにサーバーにある → どちらが新しいか分からないので上書きしない
-      if (head && (!known || head.savedAt > known.at + SLACK)) {
+      if (!head) expect = { exists: false };
+      else if (mode === "override") expect = { updateTime: head.updateTime };
+      else if (!known || !sameVersion(head, known)) {
+        // 他の端末が更新している（または、この端末で一度も同期していないのにサーバーにある）
         setSyncConflict({ id: p.id, name: p.name, device: head.device });
         return false;
-      }
+      } else expect = { updateTime: head.updateTime };
     }
-    const r = await projectPushSplit(cloud, p, deviceName(), pushHashes.current[p.id] || {});
-    if (!r.ok) return false;
+    const r = await projectPushSplit(cloud, p, deviceName(), pushHashes.current[p.id] || {}, expect);
+    if (!r.ok) {
+      // 条件が合わなかった＝確かめた直後に他の端末が書いた。書き換えていないので、改めて尋ねる
+      if (r.conflict) {
+        const head = await projectHead(cloud, p.id).catch(() => null);
+        setSyncConflict({ id: p.id, name: p.name, device: head?.device || "" });
+      }
+      return false;
+    }
     pushHashes.current[p.id] = r.hashes;
-    syncState.current[p.id] = { h: projHash(p), at: r.savedAt };
+    syncState.current[p.id] = { h: projHash(p), at: r.savedAt, ut: r.updateTime };
     persistSync();
     if (syncConflict?.id === p.id) setSyncConflict(null);
     return true;
@@ -998,7 +1020,7 @@ export default function IdeaBoard() {
         if (!s) { await pushOne(p); continue; }         // 送る直前にもう一度確かめる
         if (!known) { await pullOne(p.id, p); continue; }
         const dirty = projHash(p) !== known.h;
-        const newer = s.savedAt > known.at + SLACK;
+        const newer = !sameVersion(s, known);
         if (newer && dirty) { setSyncConflict({ id: p.id, name: p.name, device: s.device }); continue; }
         if (newer) { await pullOne(p.id, p); continue; }
         if (dirty) await pushOne(p);
@@ -1010,7 +1032,7 @@ export default function IdeaBoard() {
         try {
           if (await projectHead(cloud, m.id)) continue;  // サーバーにある。開いたときに突き合わせる
           const raw = await storeGet(projKey(m.id));
-          if (raw) await pushOne(JSON.parse(raw), true);
+          if (raw) await pushOne(JSON.parse(raw), "absent");
         } catch (e) { /* 読めないものは飛ばす */ }
       }
       reconciled.current = true;
@@ -1100,8 +1122,9 @@ export default function IdeaBoard() {
     const p = projects.find((x) => x.id === id);
     if (!p) return;
     try {
-      await pushOne(p, true);
-      setSyncConflict(null);
+      // 送れなかった（入れ違いで他の端末が書いた・電波が無い）ときは案内を残す。消すと保存されたと誤解させる
+      if (await pushOne(p, "override")) setSyncConflict(null);
+      else setCloudProjMsg("送れませんでした。もう一度選んでください");
     } catch (e) {
       setCloudProjMsg("送れませんでした（電波を確認してください）");
     }
