@@ -533,6 +533,7 @@ export default function IdeaBoard() {
   // ---- 復元ポイント（自動バックアップ） ----
   // プロジェクトごとにスナップショットを残し、あとから戻せるようにする
   const lastBackupAt = useRef({});
+  const [keepFail, setKeepFail] = useState(null);   // 控えを残せず上書きを止めたプロジェクト { id, name }
 
   const loadBackups = async (pid) => {
     try {
@@ -557,11 +558,16 @@ export default function IdeaBoard() {
     return [];
   };
 
+  // 控えを1件足す。書いたあと読み戻して、本当に残っているかを返す。
+  // writeBackups は容量に入らないと古いものから捨て、最後は何も書かずに終わるので、戻り値だけでは信用できない。
   const makeBackup = async (pid, payload, label) => {
     const list = await loadBackups(pid);
-    const saved = await writeBackups(pid, [...list, { t: Date.now(), label: label || "自動保存", data: payload }]);
-    lastBackupAt.current[pid] = Date.now();
+    const entry = { t: Date.now(), label: label || "自動保存", data: payload };
+    const saved = await writeBackups(pid, [...list, entry]);
     if (pid === currentProjectId) setBackups(saved.map(({ t, label }) => ({ t, label })));
+    const kept = (await loadBackups(pid)).some((b) => b.t === entry.t && b.data === payload);
+    if (kept) lastBackupAt.current[pid] = Date.now();
+    return kept;
   };
 
   const maybeBackup = (pid, payload) => {
@@ -588,7 +594,10 @@ export default function IdeaBoard() {
       action: async () => {
         try {
           const cur = projects.find((p) => p.id === pid);
-          if (cur) await makeBackup(pid, JSON.stringify(cur), "復元前");
+          if (cur && !(await makeBackup(pid, JSON.stringify(cur), "復元前"))) {
+            setKeepFail({ id: pid, name: cur.name });
+            return;
+          }
           const data = JSON.parse(entry.data);
           const bs = (data.boards || []).map(normalizeBoard);
           const boards = bs.length > 0 ? bs : [makeBoard("ボード1")];
@@ -870,17 +879,22 @@ export default function IdeaBoard() {
     storeSet("idea-board-cloud-optout", JSON.stringify(cloudOptOut)).catch(() => {});
   }, [cloudOptOut, loaded]);
 
-  // サーバーから読んだものを画面に反映する（位置もそのまま再現される）
-  const applyPulled = (id, r) => {
+  // サーバーから読んだものを、画面に出せる形に組み立てる
+  const buildPulled = (id, r) => {
     const data = r.project;
     const bs = (data.boards || []).map(normalizeBoard);
     const boards = bs.length > 0 ? bs : [makeBoard("ボード1")];
-    const proj = {
+    return {
       ...data,
       id,
       boards,
       currentBoardId: boards.some((b) => b.id === data.currentBoardId) ? data.currentBoardId : boards[0].id,
     };
+  };
+
+  // サーバーから読んだものを画面に反映する（位置もそのまま再現される）
+  const applyPulled = (id, r, built) => {
+    const proj = built || buildPulled(id, r);
     pushHashes.current[id] = r.hashes || {};
     syncState.current[id] = { h: projHash(proj), at: r.savedAt };
     persistSync();
@@ -889,13 +903,24 @@ export default function IdeaBoard() {
     return proj;
   };
 
-  // サーバーから読み、手元を置き換える。**置き換える前に手元の状態を復元ポイントに残す**
+  // サーバーから読み、手元を置き換える。
+  // 手元の内容が違うときは、**控えを残せたと確かめてから**置き換える。残せなければ置き換えない。
+  // 「手元は前回同期したまま」でも控えは省かない。他の端末が「この端末の方」を選ぶと、
+  // サーバー上の同じ版は上書きされ、この端末の手元にしか残っていないことがあるため。
   const pullOne = async (id, local) => {
     const r = await projectPullSplit(cloud, id);
     if (!r || !r.project) return null;
-    if (local) await makeBackup(id, JSON.stringify(local), "サーバーから読み込む前").catch(() => {});
+    const proj = buildPulled(id, r);
+    if (local && projHash(local) !== projHash(proj)) {
+      const kept = await makeBackup(id, JSON.stringify(local), "サーバーから読み込む前").catch(() => false);
+      if (!kept) {
+        setKeepFail({ id, name: local.name });
+        return null;
+      }
+    }
+    if (keepFail?.id === id) setKeepFail(null);
     if (syncConflict?.id === id) setSyncConflict(null);
-    return applyPulled(id, r);
+    return applyPulled(id, r, proj);
   };
 
   // サーバーへ送る（中身が変わったボードだけ）。
@@ -1443,13 +1468,13 @@ export default function IdeaBoard() {
     });
   };
 
-  const exportProject = () => {
-    if (!project) return;
+  const exportProject = (target = project) => {
+    if (!target) return;
     try {
-      const blob = new Blob([JSON.stringify({ ideaboardProject: 1, ...project }, null, 2)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify({ ideaboardProject: 1, ...target }, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${(project.name || "project").replace(/[\\/:*?"<>|]/g, "_")}.json`;
+      a.download = `${(target.name || "project").replace(/[\\/:*?"<>|]/g, "_")}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } catch (e) {
@@ -3681,7 +3706,7 @@ export default function IdeaBoard() {
                     title="今の状態を復元ポイントとして残す"
                     onClick={async () => {
                       const cur = projects.find((p) => p.id === currentProjectId);
-                      if (cur) await makeBackup(currentProjectId, JSON.stringify(cur), "手動");
+                      if (cur && !(await makeBackup(currentProjectId, JSON.stringify(cur), "手動"))) setKeepFail({ id: cur.id, name: cur.name });
                     }}
                     style={{ marginLeft: "auto", border: "1px solid #C9C2B2", borderRadius: 5, background: "transparent", color: "#3E3A33", fontSize: 10, padding: "2px 7px", cursor: "pointer" }}
                   >
@@ -3716,7 +3741,7 @@ export default function IdeaBoard() {
               <div style={{ borderTop: "1px solid #E4DFD2", paddingTop: 8, display: "flex", gap: 6 }}>
                 <button
                   title="現在のプロジェクトをJSONファイルに保存"
-                  onClick={exportProject}
+                  onClick={() => exportProject()}
                   style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: "transparent", fontSize: 11, padding: "4px 0", cursor: "pointer", color: "#3E3A33" }}
                 >
                   ファイルへ保存
@@ -4210,8 +4235,6 @@ export default function IdeaBoard() {
                       サーバーに保存
                     </div>
                     <div style={{ fontSize: 10.5, color: "#9C9587", lineHeight: 1.7, marginBottom: 6 }}>
-                      プロジェクトはサーバーに保存され、どの端末で開いても同じ内容になります（付箋の位置もそのままです）。
-                      電波が無いあいだはこの端末に控えておき、つながったら送ります。
                     </div>
 
                     {cloudShared.includes(currentProjectId) ? (
@@ -4247,7 +4270,6 @@ export default function IdeaBoard() {
                       <div style={{ background: "#FFF3D6", borderRadius: 5, padding: "6px 8px", marginBottom: 6 }}>
                         <div style={{ fontSize: 10.5, color: "#8A6A1F", lineHeight: 1.6, marginBottom: 4 }}>
                           「{cloudNewer.device}」とこの端末の両方で変更されています。どちらを残しますか？
-                          （選ばなかった方も、この端末の復元ポイントに残ります）
                         </div>
                         <div style={{ display: "flex", gap: 5 }}>
                           <button
@@ -6280,6 +6302,33 @@ export default function IdeaBoard() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 控えを残せず、上書きを止めた */}
+      {keepFail && (
+        <div
+          style={{
+            position: "fixed", left: "50%", top: 52, transform: "translateX(-50%)", zIndex: 200002,
+            background: "#FBE3DF", borderRadius: 10, boxShadow: "0 6px 20px rgba(30,25,15,.35)",
+            padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, maxWidth: "92vw", flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "#A23A2E" }}>
+            空き容量が足りず「{keepFail.name}」の控えを残せないため、上書きを止めました。
+          </span>
+          <button
+            onClick={() => exportProject(projects.find((p) => p.id === keepFail.id))}
+            style={{ border: "none", borderRadius: 6, background: "#A23A2E", color: "#FFFDF6", fontSize: 12, fontWeight: 700, padding: "5px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
+          >
+            ファイルへ保存
+          </button>
+          <button
+            onClick={() => setKeepFail(null)}
+            style={{ border: "none", background: "transparent", color: "#A23A2E", fontSize: 14, cursor: "pointer", padding: "0 4px" }}
+          >
+            ✕
+          </button>
         </div>
       )}
 
