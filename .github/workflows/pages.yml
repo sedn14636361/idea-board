@@ -1,0 +1,55 @@
+# main に入るたびに、アプリを組み立てて GitHub Pages に公開する。
+#   PC版:     https://sedn14636361.github.io/idea-board/
+#   スマホ版: https://sedn14636361.github.io/idea-board/mobile.html
+# 初回だけ、リポジトリの Settings → Pages → Source を「GitHub Actions」にしておく必要がある。
+name: Pages に公開
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dev/package-lock.json
+      - name: 依存を入れる
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"       # Pages には Electron 本体は要らない
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: チェックと組み立て
+        # tools/check.mjs が、一番上の IdeaBoard.html の作り直し忘れもここで止める
+        run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dev/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

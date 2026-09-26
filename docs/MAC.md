@@ -8,7 +8,7 @@ IdeaBoard は Mac でもそのまま動きます。用途に応じて2通りあ�
 
 Mac に **Node.js（LTS版）**（https://nodejs.org/）を入れておきます。
 
-1. プロジェクトフォルダを Finder で開き、そのフォルダを右クリック →「フォルダに新規ターミナル」
+1. プロジェクトフォルダの中の `dev` フォルダを Finder で開き、そのフォルダを右クリック →「フォルダに新規ターミナル」
    （出てこない場合は、ターミナルを開いて `cd ` と入力してからフォルダをドラッグ＆ドロップ）
 2. 初回のみ:
 
@@ -22,11 +22,11 @@ Mac に **Node.js（LTS版）**（https://nodejs.org/）を入れておきます
 
 ## 方法B: .app（dmg）を作って、次からアイコンで起動する
 
-Mac 上で:
+Mac 上で、`dev` フォルダで:
 
     npm run dist:mac
 
-`release` フォルダに **IdeaBoard-1.0.0-arm64.dmg**（Apple Silicon）などができます。
+`dev/release` フォルダに **IdeaBoard-1.0.0-arm64.dmg**（Apple Silicon）などができます。
 dmg を開いて `IdeaBoard.app` を「アプリケーション」フォルダにドラッグすれば、以後はアイコンから起動できます。
 
 ### 「開発元を確認できません」「悪質なソフトウェアかどうか確認できません」と出たら
@@ -100,13 +100,15 @@ Apple Developer Program（年99ドル）に登録し、証明書でアプリに�
 
 ### そもそもビルドせずに使う
 
-警告が煩わしい場合、ビルドせずターミナルから起動する方法もあります。この場合 Gatekeeper の警告は出ません。
+警告が煩わしい場合、ビルドせずターミナルから起動する方法もあります（`dev` フォルダで）。この場合 Gatekeeper の警告は出ません。
 
     npm run start
 
 ※ Windows用のexeはWindows上で、Mac用のdmgはMac上でしか作れません（`npm run dist:win` / `npm run dist:mac`）。
 
 ## 方法C: ブラウザで使う
+
+公開しているアドレス（https://sedn14636361.github.io/idea-board/）を開くか、`dev` フォルダで:
 
     npm run dev
 

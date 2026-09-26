@@ -1,0 +1,25 @@
+// 文書が100件を超えたとき・一覧の取得が失敗するとき、古い端末で上書きしない
+import { device, notesOn, pidOf, serverNotes, typeInto, banner, eq, done, F, net } from "./harness.mjs";
+const BASE = process.env.BASE;
+const A = await device("A", { base: BASE, seed: { notes: [{ id: "a1", num: 1, x: 60, y: 120, text: "最初" }], edges: [] } });
+await A.waitForTimeout(4000);
+const PID = await pidOf(A);
+const B = await device("B", { base: BASE });
+await B.waitForTimeout(4500);
+for (let i = 0; i < 100; i++) F.DB.set(`__b_other${String(i).padStart(3, "0")}_b_0`, { fields: { part: { stringValue: "{}" } }, updateTime: "2026-01-01T00:00:00.000001Z" });
+await typeInto(A, "Aが今日書いた最新の内容"); await A.waitForTimeout(5000);
+eq("Aの最新がサーバーにある", serverNotes(PID), ["Aが今日書いた最新の内容"]);
+await B.reload(); await B.waitForTimeout(6000);
+eq("100件超でも、古い端末を開き直して上書きしない", serverNotes(PID), ["Aが今日書いた最新の内容"]);
+eq("古い端末にもサーバーの最新が届く", await notesOn(B), ["Aが今日書いた最新の内容"]);
+await typeInto(A, "Aのさらに新しい内容"); await A.waitForTimeout(5000);
+net.failList = true;
+await B.reload(); await B.waitForTimeout(5000);
+eq("一覧が失敗しても上書きしない", serverNotes(PID), ["Aのさらに新しい内容"]);
+await typeInto(B, "一覧が失敗している間にBが書いた"); await B.waitForTimeout(5500);
+eq("一覧が失敗している間の編集でも上書きしない", serverNotes(PID), ["Aのさらに新しい内容"]);
+net.failList = false;
+await B.reload(); await B.waitForTimeout(5000);
+eq("直ったら競合として尋ねる", await banner(B), true);
+eq("尋ねている間もサーバーはAのまま", serverNotes(PID), ["Aのさらに新しい内容"]);
+await done("100件超・一覧の失敗");

@@ -4,9 +4,16 @@
 
 IdeaBoard はブラウザ版をそのままホーム画面アプリとして使えます。Mac も App Store 審査も不要です。
 
+## いちばん簡単: 公開しているアドレスを開く
+
+1. iPad の Safari で https://sedn14636361.github.io/idea-board/ を開く
+2. 共有ボタン（□に↑）→「**ホーム画面に追加**」
+
+新しい版は自動で届きます（開き直すと切り替わります）。以下の方法A・Bは、自分で組み立てて置きたい場合です。
+
 ## 方法A: 同じWi-Fiのパソコンから開く（お試し・すぐ使える）
 
-1. パソコン側でプロジェクトフォルダを開き、ターミナルで:
+1. パソコン側でプロジェクトフォルダの中の `dev` フォルダを開き、ターミナルで:
 
        npm install     （初回のみ）
        npm run dev
@@ -18,12 +25,12 @@ IdeaBoard はブラウザ版をそのままホーム画面アプリとして使�
 
 ## 方法B: Webに置いて、いつでも使えるようにする（推奨）
 
-1. パソコンでビルド:
+1. パソコンで、プロジェクトフォルダの中の `dev` フォルダでビルド:
 
        npm run build
 
-2. できた `dist` フォルダの中身をWebに公開する。無料でできる例:
-   - **Netlify Drop**: https://app.netlify.com/drop に `dist` フォルダをドラッグするだけ
+2. できた `dev/dist` フォルダの中身をWebに公開する。無料でできる例:
+   - **Netlify Drop**: https://app.netlify.com/drop に `dev/dist` フォルダをドラッグするだけ
    - **Vercel** / **Cloudflare Pages** / **GitHub Pages** でも可
 3. 発行されたURLをiPadのSafariで開く
 4. 共有ボタン →「**ホーム画面に追加**」

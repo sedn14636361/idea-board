@@ -72,7 +72,8 @@ self.addEventListener("activate", (e) => {
   e.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
+      // 自分の古い版だけ消す（PC 版 sw.js の保存分は同じサイトにあるので触らない）
+      await Promise.all(keys.filter((k) => k.startsWith("ideaboard-mobile-") && k !== CACHE).map((k) => caches.delete(k)));
       await self.clients.claim();
       await update(); // 制御を取った直後にも取りこぼしを埋める
     })()
@@ -89,6 +90,8 @@ self.addEventListener("fetch", (e) => {
   // ページを開くときは、まず保存済みのページを返す（電波が無くても開ける）。
   // そのうえで裏で新しい版を取りに行く（切り替わるのは次に開いたとき）。
   if (req.mode === "navigate") {
+    // このページ以外（PC 版など）は扱わない。旧版の登録が残っている端末で PC 版がスマホ版に化けないように
+    if (url.href.split(/[?#]/)[0] !== abs(PAGE)) return;
     e.respondWith(
       caches.match(PAGE, { ignoreSearch: true }).then((hit) => hit || fetch(req).catch(() => caches.match(PAGE, { ignoreSearch: true })))
     );

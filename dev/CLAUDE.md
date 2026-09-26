@@ -3,11 +3,15 @@
 付箋型アイデアボードのアプリ。Electronデスクトップアプリ（Windows exe）＋ iPad/ブラウザ向けPWAの両対応。
 
 ## 構成
-- `src/IdeaBoard.jsx` : アプリ本体（単一コンポーネント）。保存はlocalStorage
-- `electron/main.cjs` : Electronメインプロセス
-- `public/` : PWA用（manifest / sw.js / アイコン）
+- リポジトリの**一番上には利用者が使うものだけ**を置く（README.md / CHANGELOG.md / IdeaBoard.html / docs/ / .github/）。開発用のものはすべて `dev/` の中。npm のコマンドも `dev/` で実行する
+- `dev/src/IdeaBoard.jsx` : アプリ本体（単一コンポーネント）。保存はlocalStorage
+- `dev/electron/main.cjs` : Electronメインプロセス
+- `dev/public/` : PWA用（manifest / sw.js / アイコン）
 - `npm run start` : デスクトップアプリ起動 / `npm run dist` : Windowsポータブルexe作成
-- `npm run dev` / `npm run build` : ブラウザ・PWA用（iPad手順は IPAD.md）
+- `npm run dev` / `npm run build` : ブラウザ・PWA用（iPad手順は docs/IPAD.md）
+- `npm run single` : 一番上の `IdeaBoard.html`（HTML 1枚の版）を作り直す。`dev/release/` にも同じものを置く
+- `npm test` : 単体試験（dev/tests/unit）/ `npm run test:e2e` : 実ブラウザ試験（dev/tests/e2e。偽 Firestore と Playwright）
+- `.github/workflows/pages.yml` : main に入ると `dev/dist` を GitHub Pages に公開（https://sedn14636361.github.io/idea-board/ と /mobile.html）
 
 ## 仕様（ユーザーの要望で決定済み）
 
@@ -84,6 +88,7 @@
 - スマホ→PCの送信先は HOST_KEY に保存（別オリジンから送るため server.cjs に CORS と OPTIONS 対応を追加）。PCサーバーから開いた場合は location.origin が初期値になる
 - ヘッダー/フッターは env(safe-area-inset-*) を CSS変数 --safe-t/--safe-b で参照（ホーム画面起動時に端が隠れないように）
 - PC間共有: electron/sync.cjs が同期フォルダ(OneDrive等)に `<projectId>.ideaboard.json` を読み書きする。クラウド転送はサービス側任せ。書き込み前に mtime を比較して競合を検出し、画面上部で「読み込む/こちらを残す」を選ばせる。15秒ごとに一覧を確認し、別端末(device名)の更新を検知。同期対象プロジェクトは端末ごとに idea-board-synced に保存。手順は SYNC.md
+- **Service Worker の範囲**: PC 版(sw.js)は `./`、スマホ版(mobile-sw.js)は `./mobile.html`。**スマホ版を `./` で登録し直さないこと**（PC 版を横取りする。6.2.0 で修正）
 - **Service Worker はブラウザ(http/https)専用**。file:// のデスクトップ版で登録されるとfetchを横取りして画面が真っ白になる（"Not allowed to load local resource" が出る）。index.html / mobile.html では protocol を見て登録を分岐し、file:// では既存の登録とキャッシュを解除する。さらに main.cjs 起動時に session.clearStorageData で serviceworkers / cachestorage を掃除している
 - ツールバー整理: 「＋ 追加 ▾」(付箋/文字/画像/領域＋「貼る前に色・タグを決める」チェック)と「表示 ▾」(配置モード/見た目/範囲選択/手書き表示)にまとめ、盤面を広く保つ。ズームと手書き(✏️)は頻用のため単独ボタンのまま。モード中(領域作成/範囲選択)はツールバーに黄色の案内と✕を出す
 - 色の運用メモ: settings.colorNotes[]（色ごとの使い分け）。設定画面で編集。settings.showColorNotes で表示/非表示を切替でき、OFFなら色パレットは丸だけの横並びに戻る
@@ -111,7 +116,7 @@
 - クラウド設定の保存: loadCloudConf/saveCloudConf に加えて loadCloudDraft/saveCloudDraft（入力途中の控え）を用意。**読み込みは他の初期化処理と分けた独立の useEffect** で行う（まとめて読むと、途中で例外が出たときに設定だけ復元されない事故になる）。saveCloudConf は保存可否を返し、失敗時はその旨を画面に出す
 - 注意: Safari で開いた場合とホーム画面アプリとして開いた場合で、保存先が別になることがある。設定は開き方ごとに1回ずつ必要になる場合がある（「設定をコピー」「設定を貼り付け」で移せる）
 - スマホ版の「まとめ先」(AREAS_KEY): 付箋ごとに指定できる区分。名前と色を持ち、送信時に area / areaColor として渡す。PC側の placeIncoming は **area を最優先**（無ければタグのカテゴリ）でグループ化し、その色で領域(zone)を作る
-- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。現在 6.1.0。設定画面（PC）と⚙（スマホ）に表示される
+- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.2.0。設定画面（PC）と⚙（スマホ）に表示される
 - スマホ版の一覧: チェックで選択 → 共有・CSV出力・削除・PCへ送信は「選んだものだけ」（未選択なら全部）。↑↓で並び替えでき、**その順番のままPCに取り込まれる**（items は上から古い順で保持し、追加は末尾に足す）
 - スマホ版の「データでコピー」は廃止し CSV 出力に置き換え（BOM付き・引用符エスケープ。navigator.share のファイル共有を優先、不可ならダウンロード、それも不可ならコピー）
 - **ホーム画面アプリ（standalone）ではクラウド同期を出さない**: iOSのPWAは設定を保持できないことがあるため。判定は display-mode:standalone / navigator.standalone。CSVや共有での受け渡しを案内する
@@ -257,3 +262,17 @@
   - 結果（各30手）: **6.0.2 は6回中2回で「黙って消えた」を検出**（どちらも復元ポイントにだけ残り、画面からは知らせなく消えていた）。**6.1.0 は12回・書いた文132件（確かめた31件、利用者が選んで捨てた13件）で0件**。サーバーが読めなくなった回・例外も0。6.0.2 と同じ率（1回あたり1/3）で起きるなら、12回すべて0件になる確率は約0.8%
   - 言えること／言えないこと: 試した組み合わせの範囲で、アプリが黙って消した例は無い。**すべての組み合わせで起きないことの証明ではない**。本物の Firestore には当てていない（条件付き書き込みとサーバー時刻は仕様書どおりに作った偽物で確かめた）
   - 決まった手順の試験（時計のずれ・2台同期8場面・容量一杯・100件超と一覧の失敗・白紙判定）と単体試験（分割保存・原子性・上書き時の使い回し・番号詰め）もすべて通過
+
+## 6.2.0 での変更
+- **置き場所の整理**（ユーザー指定）: リポジトリの一番上は利用者が使うもの（README / CHANGELOG / IdeaBoard.html / docs）だけにし、ソース・設定・試験は `dev/` へ移した。配布テンプレートは `docs/配布テンプレート/`
+- **ダウンロードしたものがそのまま使える**（A）: 作った `IdeaBoard.html` を一番上に置いてコミットする。`bundle-single.mjs` が `<meta name="ideaboard-version">` に版を埋め込み、`check.mjs` が APP_VERSION と食い違えば止める（`npm run build` も止まる）。`npm run single` 自身は `--skip-html` で、この確認を飛ばしてから作る
+- **GitHub Pages で公開**（B）: `.github/workflows/pages.yml`。`npm ci` では Electron と Playwright のブラウザを取りに行かない（ELECTRON_SKIP_BINARY_DOWNLOAD / PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD）。リポジトリの Settings → Pages → Source を「GitHub Actions」にする必要がある（1回だけ）
+  - Pages の版と HTML ファイルの版は、ブラウザの保存場所が別（オリジンが違う）。クラウド同期を設定すれば中身は共有される
+- **PC 版とスマホ版の Service Worker が互いを横取りしていた不具合を修正**（Pages で同じ場所に置くと主な経路になるため。実ブラウザで再現→修正を確認、`tests/e2e/sw-scope.mjs`）
+  - 原因: 両方とも範囲 `./`（フォルダ全体）で登録しており、1つの範囲には1つしか登録できない。`mobile-sw.js` は**どのページを開いても保存済みの mobile.html を返す**ので、スマホ版を一度開いた端末では PC 版のアドレスでもスマホ版が出続けた。PC 版のページが一度も読まれないため、PC 版の `sw.js` が登録されることもなく、自力では戻らない。さらに互いの activate が**相手のキャッシュも消していた**
+  - 直し方: スマホ版は `scope: "./mobile.html"` で登録（範囲が長い方が優先されるので、PC 版の `./` と共存できる）。`mobile-sw.js` は mobile.html 以外のページ移動を扱わない。`sw.js` は mobile.html へのページ移動を扱わない。キャッシュはそれぞれ自分の接頭辞（`ideaboard-v` / `ideaboard-mobile-`）の古い版だけ消す
+  - 旧版の登録（範囲 `./` の mobile-sw.js）が残った端末: mobile.html を開けば外す。PC 版を先に開いた場合も、1回目は旧 SW がスマホ版を返すが、そのとき SW が更新されるので2回目から PC 版になる（試験の場面 C）
+  - 未対処: PC 版の `sw.js` はページもキャッシュ優先で裏で取り直すだけなので、5.10.0 でスマホ版に起きたのと同じく「新しいページだけ保存され、新しい JS がまだ無い状態でオフラインで開く」と起動できない隙間がある。スマホ版と同じ更新の仕組みに揃えるのは別の作業
+- **試験をリポジトリに入れた**（`dev/tests`）。6.1.0 までは作業用として外に置いていた
+  - `run.mjs` は同じプロセスの中で静的サーバーを立てるので、子の試験は **`spawnSync` ではなく非同期の `spawn` で待つ**こと（同期で待つとサーバーが応答できず、全部の試験が「ページが開けない」で失敗する）
+  - 試験中に `dist` を作り直さない（読み込み途中のページが新旧混ざり、結果が当てにならない）
