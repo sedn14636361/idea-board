@@ -1,0 +1,28 @@
+// 空き容量が一杯の端末で「サーバーの方」を選んでも、黙って消えない
+import fs from "fs";
+import { device, notesOn, pidOf, backupsOf, serverNotes, typeInto, banner, eq, done, closeKeepFail } from "./harness.mjs";
+const BASE = process.env.BASE;
+const MINE = "Bが何時間もかけて書いた大事な文章";
+const A = await device("A", { base: BASE, seed: { notes: [{ id: "a1", num: 1, x: 60, y: 120, text: "最初" }], edges: [] } });
+await A.waitForTimeout(4000);
+const PID = await pidOf(A);
+const B = await device("B", { base: BASE });
+await B.waitForTimeout(4000);
+await typeInto(A, "Aの編集"); await A.waitForTimeout(5000);
+await typeInto(B, MINE); await B.waitForTimeout(5500);
+eq("競合の案内", await banner(B), true);
+await B.evaluate(() => { let i = 0; for (const size of [256 * 1024, 16 * 1024, 1024, 64, 4]) { const c = "x".repeat(size); try { for (;;) { localStorage.setItem("f" + i, c); i++; } } catch (e) {} } });
+await B.getByRole("button", { name: "サーバーの方" }).first().click();
+await B.waitForTimeout(3000);
+eq("容量一杯では上書きしない", (await B.evaluate(() => [...document.querySelectorAll("textarea")].map((t) => t.value))).includes(MINE), true);
+eq("控えを残せなかったと知らせる", await B.getByText("控えを残せないため", { exact: false }).count() > 0, true);
+eq("サーバーはAのまま", serverNotes(PID), ["Aの編集"]);
+const [dl] = await Promise.all([B.waitForEvent("download", { timeout: 5000 }), B.getByRole("button", { name: "ファイルへ保存" }).last().click()]);
+eq("書き出したファイルにBの文章", JSON.parse(fs.readFileSync(await dl.path(), "utf8")).boards[0].notes.map((n) => n.text), [MINE]);
+await B.evaluate(() => { for (const k of Object.keys(localStorage)) if (/^f\d+$/.test(k)) localStorage.removeItem(k); });
+eq("知らせを閉じられる", await closeKeepFail(B), true);
+await B.getByRole("button", { name: "サーバーの方" }).first().click();
+await B.waitForTimeout(3000);
+eq("空きができたら読み込める", await notesOn(B), ["Aの編集"]);
+eq("Bの文章は控えに残っている", (await backupsOf(B)).includes(MINE), true);
+await done("容量一杯");

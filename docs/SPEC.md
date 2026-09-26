@@ -312,6 +312,8 @@
 
 ### 初回セットアップ
 
+コマンドはすべて、リポジトリの中の `dev` フォルダで実行する。
+
 ```
 npm install
 ```
@@ -325,7 +327,7 @@ npm run dev          # ブラウザで動作確認（http://localhost:5173）
 
 ### iPadやブラウザで使う（PWA）
 
-`npm run build` で生成される `dist` フォルダをWebに公開し、iPadのSafariで開いて「ホーム画面に追加」すると、全画面のアプリとして起動できます（オフライン動作対応）。詳しい手順は **IPAD.md** を参照。
+公開しているアドレス（https://sedn14636361.github.io/idea-board/ 、`main` に入るたびに自動で更新）をそのまま使える。自分で置く場合は `npm run build` で生成される `dev/dist` フォルダをWebに公開し、iPadのSafariで開いて「ホーム画面に追加」すると、全画面のアプリとして起動できます（オフライン動作対応）。詳しい手順は **IPAD.md** を参照。
 
 ### exeの作成（Windows）
 
@@ -333,7 +335,7 @@ npm run dev          # ブラウザで動作確認（http://localhost:5173）
 npm run dist:win
 ```
 
-- `release/IdeaBoard 1.0.0.exe`（ポータブル版）が生成される
+- `dev/release/IdeaBoard 1.0.0.exe`（ポータブル版）が生成される
 - インストール不要。exe 1ファイルの配布でそのまま動く
 - 初回はElectron本体のダウンロードのため数分かかる
 
@@ -345,7 +347,7 @@ Macでも `npm run start` でそのままアプリとして起動できます。
 npm run dist:mac
 ```
 
-`release` に dmg が生成されます。未署名のため初回は右クリック →「開く」で起動してください。詳しい手順は **MAC.md** を参照。
+`dev/release` に dmg が生成されます。未署名のため初回は右クリック →「開く」で起動してください。詳しい手順は **MAC.md** を参照。
 
 ※ Windows用exeはWindows上、Mac用dmgはMac上でのみビルドできます。
 
@@ -369,7 +371,7 @@ npm run dist:mac
 
 「既定に戻す」で初期値に一括リセットできます。数値・タグの編集は欄の外をクリックした時点で確定します。
 
-### コード側の定数（`src/IdeaBoard.jsx` 冒頭）
+### コード側の定数（`dev/src/IdeaBoard.jsx` 冒頭）
 
 | 定数 | 既定値 | 意味 |
 |---|---|---|
@@ -379,28 +381,32 @@ npm run dist:mac
 
 そのほか:
 
-- ウィンドウ初期サイズ: `electron/main.cjs` の `width` / `height`
-- アプリ名: `package.json` の `productName`（データ保存フォルダ名にも使われる点に注意）
+- ウィンドウ初期サイズ: `dev/electron/main.cjs` の `width` / `height`
+- アプリ名: `dev/package.json` の `productName`（データ保存フォルダ名にも使われる点に注意）
 
 ---
 
 ## プロジェクト構成（開発者向け）
 
+一番上には利用者が使うものだけを置き、開発用のものは `dev/` にまとめている。
+
 ```
-idea-board-app/
-├── package.json          # 依存・スクリプト・electron-builder設定
-├── vite.config.js        # base:'./'（Electronのfile://読み込みに必須）
-├── index.html
-├── electron/
-│   └── main.cjs          # Electronメインプロセス（メニュー非表示・dist読み込み）
-├── src/
-│   ├── main.jsx          # エントリ
-│   └── IdeaBoard.jsx     # アプリ本体（単一コンポーネント）
-├── build/icon.png        # アプリアイコン（dmg/exe用）
-├── CLAUDE.md             # Claude Code向けの仕様・設計メモ（開発経緯と落とし穴）
-├── IPAD.md               # iPadで使う手順（PWA）
-├── MAC.md                # Macで使う手順
-└── README.md             # このファイル
+idea-board/
+├── README.md             # 使い方・入手方法
+├── IdeaBoard.html        # そのまま使える版（npm run single で作り直す）
+├── CHANGELOG.md          # 更新履歴
+├── docs/                 # 手順書（この SPEC.md、IPAD.md、MAC.md など）と 配布テンプレート/
+├── .github/workflows/    # main に入るたびに GitHub Pages へ公開する仕組み
+└── dev/                  # 開発用
+    ├── package.json      # 依存・スクリプト・electron-builder設定
+    ├── vite.config.js    # base:'./'（Electronのfile://読み込みに必須）
+    ├── index.html  mobile.html   # 開発用の元ファイル（直接開いても動かない）
+    ├── electron/main.cjs # Electronメインプロセス
+    ├── src/              # アプリ本体（IdeaBoard.jsx）・スマホ版・cloud.js
+    ├── tools/            # チェック・HTML 1枚版の作成
+    ├── tests/            # 単体試験（npm test）・実ブラウザの試験（npm run test:e2e）
+    ├── build/icon.png    # アプリアイコン（dmg/exe用）
+    └── CLAUDE.md         # 設計の経緯と、触るときの注意点
 ```
 
 ### 実装上の注意（既知の落とし穴）
@@ -408,4 +414,4 @@ idea-board-app/
 - **ドラッグのつかみ代**: 操作列の行自体に `data-nodrag` を付けないこと。付けるとシンプル枠モードでつかむ場所が消える。除外は操作ボタン・ポップオーバー個別に付与する
 - **線の端点**: 付箋の実測矩形（ズーム補正済み）から枠の外周交点を計算している。ミニボード内の付箋も実測ベースなので、レイアウト変更時も座標計算の修正は原則不要
 - **ブラウザダイアログ禁止**: `confirm` 等はサンドボックス環境でブロックされる。自前の `confirmBox` を使う
-- 詳細な開発経緯は `CLAUDE.md` を参照
+- 詳細な開発経緯は `dev/CLAUDE.md` を参照

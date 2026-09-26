@@ -4,13 +4,18 @@
 
 受け取った人が「解凍して起動するだけ」で使えるようにまとめます。
 
+コマンドはすべて、プロジェクトフォルダの中の **`dev` フォルダ**で実行します。
+
 ---
 
 ## いちばん手軽: HTML 1枚で渡す
 
+リポジトリの一番上にある `IdeaBoard.html`（約300KB）を1つ渡すだけです。
+自分で作り直すときは次を実行します（一番上の `IdeaBoard.html` と `dev/release/IdeaBoard.html` が作り直されます）。
+
     npm run single
 
-`release/IdeaBoard.html` ができます（約300KB）。これを1つ渡すだけです。
+公開しているアドレス（https://sedn14636361.github.io/idea-board/）を教えるだけでも使ってもらえます。
 受け取った人はダブルクリックで開けば、インストールなしで使えます。
 どの機種の上で作っても、Windows / Mac のどちらでも動きます。
 
@@ -33,7 +38,7 @@
     npm run dist:win     Windows用
     npm run dist:mac     Mac用
 
-`release` フォルダに、次のものができます。
+`dev/release` フォルダに、次のものができます。
 
 | 機種 | ファイル |
 |---|---|
@@ -50,10 +55,10 @@
 ```
 IdeaBoard/
 ├── IdeaBoard.exe               （またはdmg）
-└── はじめにお読みください.txt    ← 配布テンプレート からコピー
+└── はじめにお読みください.txt    ← docs/配布テンプレート からコピー
 ```
 
-`配布テンプレート/はじめにお読みください.txt` は、
+`docs/配布テンプレート/はじめにお読みください.txt` は、
 受け取った人向けに書いてあります。そのまま同梱してください。
 
 **Mac用を配るときは、arm64版とIntel版のどちらかを選んで入れてください。**
@@ -86,10 +91,11 @@ IdeaBoard/
 
 ## 更新版を配るとき
 
-1. `package.json` の `version` と `src/version.js` の `APP_VERSION` を上げる
+1. `dev/package.json` の `version` と `dev/src/version.js` の `APP_VERSION` を上げる
 2. `CHANGELOG.md` に変更点を1行書く
-3. もう一度 `npm run dist:win` / `dist:mac`
-4. 新しいファイルを配る
+3. `npm run single` で一番上の `IdeaBoard.html` を作り直す（忘れると `npm run build` などが止まって知らせます）
+4. もう一度 `npm run dist:win` / `dist:mac`
+5. 新しいファイルを配る
 
 **受け取った人のデータは消えません。**アプリを入れ替えても、
 書いた内容はパソコンの中に残ったままです。

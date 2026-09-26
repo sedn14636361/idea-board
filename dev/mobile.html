@@ -59,7 +59,16 @@
         if (!("serviceWorker" in navigator)) return;
         if (location.protocol !== "http:" && location.protocol !== "https:") return;
         window.addEventListener("load", function () {
-          navigator.serviceWorker.register("./mobile-sw.js").catch(function () {});
+          // 範囲はこのページだけ。同じ場所に置く PC 版(index.html)を横取りしないように
+          navigator.serviceWorker.register("./mobile-sw.js", { scope: "./mobile.html" }).catch(function () {});
+          // 6.1.0 までは範囲がフォルダ全体だった。残っていると PC 版を開いてもスマホ版が出るので外す
+          var dir = new URL("./", location.href).href;
+          navigator.serviceWorker.getRegistrations().then(function (rs) {
+            rs.forEach(function (r) {
+              var w = r.active || r.waiting || r.installing;
+              if (r.scope === dir && w && /mobile-sw\.js$/.test(w.scriptURL)) r.unregister();
+            });
+          }).catch(function () {});
         });
       })();
     </script>

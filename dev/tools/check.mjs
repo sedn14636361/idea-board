@@ -39,6 +39,24 @@ for (const f of files) {
   }
 }
 
+// 3) リポジトリの一番上の IdeaBoard.html が、今の版から作られているか
+//    （GitHub からダウンロードした人が使うもの。版を上げたのに作り直し忘れると、古い版が配られてしまう）
+//    npm run single の直前だけは確かめない（これから作り直すため）
+if (!process.argv.includes("--skip-html")) {
+  const ver = (fs.readFileSync("src/version.js", "utf8").match(/APP_VERSION\s*=\s*"([^"]+)"/) || [])[1];
+  const top = "../IdeaBoard.html";
+  if (!fs.existsSync(top)) {
+    console.error(`[IdeaBoard.html] リポジトリの一番上にありません。npm run single で作ってください`);
+    bad++;
+  } else {
+    const built = (fs.readFileSync(top, "utf8").match(/<meta name="ideaboard-version" content="([^"]+)"/) || [])[1];
+    if (built !== ver) {
+      console.error(`[IdeaBoard.html] 版 ${built || "不明"} から作られています（今の版は ${ver}）。npm run single で作り直してください`);
+      bad++;
+    }
+  }
+}
+
 if (bad > 0) {
   console.error(`\n問題が ${bad} 件あります。ビルドを中止しました。`);
   process.exit(1);

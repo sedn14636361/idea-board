@@ -1,11 +1,16 @@
-// HTML 1枚で動く版を作る。できあがりは release/IdeaBoard.html
+// HTML 1枚で動く版を作る。できあがりは release/IdeaBoard.html と、リポジトリの一番上の IdeaBoard.html
 // ダブルクリックで開けば、インストールなしでそのまま使える。
+// 一番上の IdeaBoard.html は GitHub からダウンロードした人がそのまま使うもの。版を上げたら必ず作り直してコミットする
+// （tools/check.mjs が版の食い違いを見つけて止める）。
 import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 
 const tmp = path.resolve("release/.single");
 const out = path.resolve("release/IdeaBoard.html");
+const top = path.resolve("..", "IdeaBoard.html");        // リポジトリの一番上
+const APP_VERSION = (fs.readFileSync("src/version.js", "utf8").match(/APP_VERSION\s*=\s*"([^"]+)"/) || [])[1];
+if (!APP_VERSION) { console.error("src/version.js から版を読めませんでした"); process.exit(1); }
 
 execSync("npx vite build --config vite.single.config.js", {
   stdio: "inherit",
@@ -31,6 +36,9 @@ if (replaced !== 1) {
 html = html.replace(/\s*<link[^>]*rel="manifest"[^>]*>/g, "");
 html = html.replace(/\s*<link[^>]*rel="(apple-touch-)?icon"[^>]*>/g, "");
 
+// どの版から作ったかを埋め込む（tools/check.mjs が作り直し忘れを見つけるのに使う）
+html = html.replace(/<head>/i, `<head>\n    <meta name="ideaboard-version" content="${APP_VERSION}">`);
+
 // 取りこぼしが無いか確かめる
 const left = [...html.matchAll(/(?:src|href)="(?!data:|https?:|#)([^"]+)"/g)].map((m) => m[1]);
 if (left.length) {
@@ -38,7 +46,11 @@ if (left.length) {
   process.exit(1);
 }
 
+fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, html);
+fs.writeFileSync(top, html);
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\nできました: ${path.relative(process.cwd(), out)}（${Math.round(fs.statSync(out).size / 1024)} KB）`);
+console.log(`\nできました（版 ${APP_VERSION}・${Math.round(fs.statSync(out).size / 1024)} KB）:`);
+console.log(`  ${path.relative(process.cwd(), out)}`);
+console.log(`  ${path.relative(process.cwd(), top)}  ← リポジトリの一番上。コミットしてください`);
 console.log("ダブルクリックで開けば、そのまま使えます。");

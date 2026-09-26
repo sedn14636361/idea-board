@@ -1,6 +1,6 @@
 # IdeaBoard
 
-版 6.1.0
+版 6.2.0
 
 アイデアを付箋として貼り、線でつなぎ、まとまりを作りながら考えるためのアプリです。
 物語の構成、企画のたたき台、調べ物の整理などに使えます。
@@ -39,7 +39,17 @@
 
 ## 使い始める
 
-[Node.js](https://nodejs.org/)（LTS版）を入れてから、zipを解凍したフォルダ内で次を実行します。
+### すぐ使う（インストール不要）
+
+- **ブラウザで開く**: https://sedn14636361.github.io/idea-board/ （スマホ版は https://sedn14636361.github.io/idea-board/mobile.html ）
+- **HTMLファイルで使う**: このページの「Code」→「Download ZIP」で保存して展開し、中の `IdeaBoard.html` をダブルクリック
+
+どちらも、書いた内容はその端末のブラウザに保存されます（ブラウザで開いた版とHTMLファイルの版は、保存場所が別です）。
+端末をまたいで使うときは、下の「スマホや他のパソコンと連携したいとき」を設定してください。
+
+### アプリとして使う
+
+[Node.js](https://nodejs.org/)（LTS版）を入れてから、zipを解凍したフォルダの中の **`dev` フォルダ**で次を実行します。
 
 ```
 npm install     （初回のみ）
@@ -47,10 +57,10 @@ npm run start   組み立ててから起動する（コードを変えたとき�
 npm run app     すぐ起動する（2回目以降はこちらが速いです）
 ```
 
-HTML 1枚で動く版を作るときは次を実行します。`release/IdeaBoard.html` ができ、ダブルクリックで開けます（どの機種の上でも作れます）。
+一番上の `IdeaBoard.html` を作り直すときは次を実行します（どの機種の上でも作れます）。
 
 ```
-npm run single      HTML 1枚で動く版を作る
+npm run single      HTML 1枚で動く版を作り直す
 ```
 
 exeファイルを作るときは、その機種の上で実行してください。
@@ -138,16 +148,21 @@ npm run dist:mac    Mac用のdmgを作る
 
 ## 作り直したいとき（開発者向け）
 
+作業はすべて `dev` フォルダの中で行います。
+
 ```
-npm run check    書き間違いがないか確認する
-npm run dev      ブラウザで開発版を動かす
-npm run build    配布用のファイルを作る
+npm run check      書き間違いがないか確認する
+npm run dev        ブラウザで開発版を動かす
+npm run build      配布用のファイルを作る
+npm test           保存・同期の仕組みを確かめる
+npm run test:e2e   実ブラウザで確かめる（Chromium が必要）
 ```
 
-- `src/IdeaBoard.jsx` … アプリ本体
-- `src/MobileQuickAdd.jsx` … スマホ版
-- `electron/` … デスクトップアプリの土台
-- `CLAUDE.md` … 設計の経緯と、触るときの注意点
+- `dev/src/IdeaBoard.jsx` … アプリ本体
+- `dev/src/MobileQuickAdd.jsx` … スマホ版
+- `dev/electron/` … デスクトップアプリの土台
+- `dev/tests/` … 試験
+- `dev/CLAUDE.md` … 設計の経緯と、触るときの注意点
 
 ---
 
