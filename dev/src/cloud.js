@@ -89,25 +89,29 @@ export async function cloudTest(conf) {
   return true;
 }
 
-// 付箋をクラウドに置く
+const inboxId = (id) => String(id || Date.now() + Math.random()).replace(/[^\w-]/g, "");
+
+// 付箋をクラウドに置く。付箋ごとに ID が決まっているので、直して送り直すと上書きになる
+// （6.2.0 までは作成だけで、同じ ID があると 409 を「送れた」と見なし、直した内容が届かなかった）
+// 返り値: 置けた付箋の ID（置けなかったものは含まない）。通信が切れたら例外
 export async function cloudPush(conf, items) {
-  if (!items || items.length === 0) return 0;
+  const done = [];
+  if (!items || items.length === 0) return done;
   const token = await signIn(conf);
-  let n = 0;
   for (const it of items) {
-    const id = String(it.id || Date.now() + Math.random()).replace(/[^\w-]/g, "");
-    const r = await fetch(`${docsUrl(conf)}?documentId=${encodeURIComponent(id)}`, {
-      method: "POST",
+    const r = await fetch(`${docsUrl(conf)}/${encodeURIComponent(inboxId(it.id))}`, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       // 中身はまとめて1つの文字列にしておく（形式の変換で悩まないため）
       body: JSON.stringify({ fields: { payload: { stringValue: JSON.stringify(it) } } }),
     });
-    if (r.ok || r.status === 409) n++; // 409 は同じものを送り直した場合
+    if (r.ok) done.push(it.id);
   }
-  return n;
+  return done;
 }
 
 // クラウドにある付箋を取り出す
+// _ut はサーバーの更新時刻。消すときに「読んだときのままか」を確かめるのに使う
 export async function cloudList(conf) {
   const token = await signIn(conf);
   const out = [];
@@ -121,6 +125,7 @@ export async function cloudList(conf) {
       try {
         const item = JSON.parse(doc.fields?.payload?.stringValue || "{}");
         item._docId = doc.name.split("/").pop();
+        item._ut = doc.updateTime || null;
         out.push(item);
       } catch (e) { /* 壊れたものは飛ばす */ }
     }
@@ -131,15 +136,22 @@ export async function cloudList(conf) {
 }
 
 // 取り込んだものをクラウドから消す
-export async function cloudRemove(conf, docIds) {
-  if (!docIds || docIds.length === 0) return;
+// 渡すのは cloudList で読んだ付箋（_docId と _ut を持つ）。**読んだときのままのものだけ**消す。
+// 読んだあとにスマホが直して送っていたら、それは消さずに残す（次の確認で書き換えとして出る）
+// 返り値: 消えずに残した付箋の _docId
+export async function cloudRemove(conf, items) {
+  const kept = [];
+  if (!items || items.length === 0) return kept;
   const token = await signIn(conf);
-  for (const id of docIds) {
-    await fetch(`${docsUrl(conf)}/${encodeURIComponent(id)}`, {
+  for (const it of items) {
+    const q = it._ut ? `?currentDocument.updateTime=${encodeURIComponent(it._ut)}` : "";
+    const r = await fetch(`${docsUrl(conf)}/${encodeURIComponent(it._docId)}${q}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
-    }).catch(() => {});
+    }).catch(() => null);
+    if (!r || !r.ok) kept.push(it._docId);
   }
+  return kept;
 }
 
 // ============================================================

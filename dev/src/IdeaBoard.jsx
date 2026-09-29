@@ -4,6 +4,7 @@ import {
   projectList, projectPushSplit, projectPullSplit, projectRemoveSplit, projectHead, hashOf,
   cloudDiagnose, makeRoomKey, FIRESTORE_RULES, tagsPush, tagsPull,
 } from "./cloud.js";
+import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
 // ---- 定数 ----
@@ -676,7 +677,7 @@ export default function IdeaBoard() {
       const items = Array.isArray(data) ? data : data.items || [];
       const catalog = Array.isArray(data) ? null : data.tagCatalog;
       if (items.length === 0) return;
-      placeIncoming(items, catalog);
+      takeIncoming(items, catalog);
       setPasteText("");
       setPasteOpen(false);
       setShareOpen(false);
@@ -1163,6 +1164,7 @@ export default function IdeaBoard() {
   };
 
   // 選んだものだけボードに貼り、それだけをクラウドから消す
+  // スマホで直した付箋は、取り込み済みの付箋を書き換える（incomingPlan を参照）
   const receiveCloud = async () => {
     if (!cloud) return;
     const chosen = cloudItems.filter((x) => previewPicked.includes(x._docId));
@@ -1170,12 +1172,13 @@ export default function IdeaBoard() {
     const catalog = chosen.find((x) => Array.isArray(x.tagCatalog))?.tagCatalog
       || cloudItems.find((x) => Array.isArray(x.tagCatalog))?.tagCatalog
       || null;
-    placeIncoming(chosen, catalog);
+    takeIncoming(chosen, catalog);
     const ids = chosen.map((x) => x._docId).filter(Boolean);
     setCloudItems((list) => list.filter((x) => !ids.includes(x._docId)));
     setPreviewPicked([]);
     setPreviewOpen(false);
-    cloudRemove(cloud, ids).catch(() => {});
+    // 読んだあとにスマホが直して送り直していたものは消えずに残り、次の確認でまた出てくる
+    cloudRemove(cloud, chosen).catch(() => {});
   };
 
   // 選んだものをクラウドから消すだけ（貼らない）
@@ -1183,9 +1186,10 @@ export default function IdeaBoard() {
     const ids = previewPicked.slice();
     if (ids.length === 0) return;
     askThen(`選んだ${ids.length}件を、貼らずに消します。よろしいですか？`, "消す", () => {
+      const doomed = cloudItems.filter((x) => ids.includes(x._docId));
       setCloudItems((list) => list.filter((x) => !ids.includes(x._docId)));
       setPreviewPicked([]);
-      cloudRemove(cloud, ids).catch(() => {});
+      cloudRemove(cloud, doomed).catch(() => {});
     });
   };
 
@@ -1208,11 +1212,8 @@ export default function IdeaBoard() {
     }
   };
 
-  // 受け取った付箋を、カテゴリごとにまとめて置く
-  const placeIncoming = (items, incoming) => {
-    if (!items || items.length === 0) return;
-
-    // スマホで増やしたタグ・カテゴリをこちらの設定にも取り込む
+  // スマホで増やしたタグ・カテゴリをこちらの設定にも取り込む
+  const mergeIncomingCatalog = (incoming) => {
     if (Array.isArray(incoming) && incoming.length > 0) {
       setSettings((st) => {
         const cats = [...(st.presetTags || [])];
@@ -1233,6 +1234,48 @@ export default function IdeaBoard() {
         return { ...st, presetTags: cats };
       });
     }
+  };
+
+  // スマホの付箋の中身を、このPCの付箋の形にする（色はこのPCの色定義に合わせる）
+  const incomingFields = (it) => ({
+    title: it.title || "",
+    useTitle: !!(it.title || "").trim(),
+    text: it.text || "",
+    tags: Array.isArray(it.tags) ? it.tags : [],
+    color: resolveColor(it),
+  });
+  // 取り込んだ印。h は取り込んだ時点の中身の指紋で、PCで手を加えたかどうかの判定に使う
+  const srcOf = (it, fields) => ({ id: String(it.id), rev: it.rev || 0, h: noteContentHash(fields) });
+
+  // 届いた付箋を取り込む。直した付箋は取り込み済みの付箋を書き換え、新しいものは貼る（incoming.js）
+  const takeIncoming = (items, catalog) => {
+    const plan = incomingPlan(project, items);
+    mergeIncomingCatalog(catalog);
+    applyIncomingUpdates(items.filter((it) => plan.get(it)?.kind === "update"), plan);
+    placeIncoming(items.filter((it) => ["new", "edited"].includes(plan.get(it)?.kind)));
+  };
+
+  // 直した付箋で、取り込み済みの付箋を書き換える（位置・大きさ・番号・線・入れ子はそのまま）
+  const applyIncomingUpdates = (items, plan) => {
+    if (!items || items.length === 0) return;
+    const byNote = new Map(items.map((it) => [plan.get(it).noteId, it]));
+    setBoards((bs) => bs.map((b) => {
+      if (!b.notes.some((n) => byNote.has(n.id))) return b;
+      return {
+        ...b,
+        notes: b.notes.map((n) => {
+          const it = byNote.get(n.id);
+          if (!it) return n;
+          const f = incomingFields(it);
+          return { ...n, ...f, src: srcOf(it, f) };
+        }),
+      };
+    }));
+  };
+
+  // 受け取った付箋を、カテゴリごとにまとめて置く
+  const placeIncoming = (items) => {
+    if (!items || items.length === 0) return;
 
     // まとめ先（スマホで指定したもの）を優先し、無ければタグのカテゴリでまとめる
     const groups = new Map();
@@ -1297,11 +1340,9 @@ export default function IdeaBoard() {
             null,
             num++
           );
-          n.title = it.title || "";
-          n.useTitle = !!(it.title || "").trim();
-          n.text = it.text || "";
-          n.tags = Array.isArray(it.tags) ? it.tags : [];
-          n.color = resolveColor(it);
+          const f = incomingFields(it);
+          Object.assign(n, f);
+          n.src = srcOf(it, f);
           n.z = ++zRef.current;
           newNotes.push(n);
         });
@@ -2451,7 +2492,9 @@ export default function IdeaBoard() {
 
   // ---- 付箋の複製・コピー ----
   // noteIdの付箋を（入れ子の中身・タグ・内部の線ごと）指定先のプロジェクト/ボードへ複製する
-  const copySubtreeTo = (noteId, targetProjectId, targetBoardId) => {
+  // keepSrc: スマホから取り込んだ印（note.src）を残すか。移動なら残し、複製なら外す
+  // （複製にも残すと、スマホで直したときにどちらを書き換えるか決まらなくなる）
+  const copySubtreeTo = (noteId, targetProjectId, targetBoardId, keepSrc = false) => {
     const sameBoard = targetProjectId === currentProjectId && targetBoardId === currentId;
     const subtreeIds = [noteId, ...collectDescendants(noteId, byParent)];
     const subtreeSet = new Set(subtreeIds);
@@ -2469,8 +2512,10 @@ export default function IdeaBoard() {
             for (const sn of srcNotes) idMap[sn.id] = nextId();
             const newNotes = srcNotes.map((sn) => {
               const isRoot = sn.id === noteId;
+              const { src, ...rest } = sn;
               return {
-                ...sn,
+                ...rest,
+                ...(keepSrc && src ? { src } : {}),
                 id: idMap[sn.id],
                 num: num++,
                 parentId: isRoot ? (sameBoard ? sn.parentId : null) : idMap[sn.parentId],
@@ -2500,12 +2545,12 @@ export default function IdeaBoard() {
   }, [pendingJump, currentId, notes]);
 
   // 別プロジェクトへコピーする（コピー先の開いているボードに貼る）
-  const copyToProject = (noteId, targetProjectId) => {
+  const copyToProject = (noteId, targetProjectId, keepSrc = false) => {
     setProjects((ps) => {
       const target = ps.find((p) => p.id === targetProjectId);
       if (!target) return ps;
       const tb = target.boards.find((b) => b.id === target.currentBoardId) || target.boards[0];
-      if (tb) setTimeout(() => copySubtreeTo(noteId, targetProjectId, tb.id), 0);
+      if (tb) setTimeout(() => copySubtreeTo(noteId, targetProjectId, tb.id, keepSrc), 0);
       return ps;
     });
   };
@@ -2584,7 +2629,7 @@ export default function IdeaBoard() {
   };
 
   const listMoveTo = (boardId) => {
-    listPicked.forEach((id) => copySubtreeTo(id, currentProjectId, boardId));
+    listPicked.forEach((id) => copySubtreeTo(id, currentProjectId, boardId, true));
     const doomed = new Set();
     listPicked.forEach((id) => {
       doomed.add(id);
@@ -2616,12 +2661,12 @@ export default function IdeaBoard() {
 
   // 別のボード／プロジェクトへ移動する（複製してから元を消す）
   const moveSubtreeTo = (noteId, targetProjectId, targetBoardId) => {
-    copySubtreeTo(noteId, targetProjectId, targetBoardId);
+    copySubtreeTo(noteId, targetProjectId, targetBoardId, true);
     setTimeout(() => removeNote(noteId), 0);
   };
 
   const moveToProject = (noteId, targetProjectId) => {
-    copyToProject(noteId, targetProjectId);
+    copyToProject(noteId, targetProjectId, true);
     setTimeout(() => removeNote(noteId), 0);
   };
 
@@ -5313,6 +5358,16 @@ export default function IdeaBoard() {
       {/* 届いた付箋を確認して貼る */}
       {previewOpen && (() => {
         const all = cloudItems;
+        const plan = incomingPlan(project, all);
+        // 押したときに何が起きるか（新しく貼るものは何も付けない）
+        const planLabel = (p) => {
+          if (!p || p.kind === "new") return null;
+          const where = p.boardId && p.boardId !== currentId
+            ? `${boards.find((b) => b.id === p.boardId)?.title || "別のボード"} の #${p.num}` : `#${p.num}`;
+          if (p.kind === "update") return { text: `${where} を書き換え`, bg: "#DCEBDC", fg: "#2F5A2F" };
+          if (p.kind === "edited") return { text: `${where} はPCで編集済みのため新しく貼る`, bg: "#FFF3D6", fg: "#8A6A1F" };
+          return { text: "取り込み済み", bg: "rgba(62,58,51,.08)", fg: "#8A857B" };
+        };
         return (
           <div
             onPointerDown={(e) => { if (e.target === e.currentTarget) setPreviewOpen(false); }}
@@ -5356,6 +5411,7 @@ export default function IdeaBoard() {
                   const ci = resolveColor(it);
                   const col = COLORS[ci] || COLORS[DEFAULT_COLOR];
                   const forOther = it.targetProjectId && it.targetProjectId !== currentProjectId;
+                  const pl = planLabel(plan.get(it));
                   return (
                     <label
                       key={it._docId}
@@ -5396,6 +5452,11 @@ export default function IdeaBoard() {
                               {t}
                             </span>
                           ))}
+                          {pl && (
+                            <span data-plan style={{ fontSize: 10, fontWeight: 700, color: pl.fg, background: pl.bg, borderRadius: 4, padding: "1px 7px" }}>
+                              {pl.text}
+                            </span>
+                          )}
                           {forOther && (
                             <span style={{ fontSize: 10, color: "#8A6A1F", background: "#FFF3D6", borderRadius: 4, padding: "1px 7px" }}>
                               「{it.targetProjectName || "別のプロジェクト"}」宛て
