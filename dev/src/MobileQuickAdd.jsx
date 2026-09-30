@@ -24,6 +24,7 @@ const DEFAULT_COLOR = COLORS.length - 1;
 const CATALOG_KEY = "idea-board-tag-catalog";
 const AREAS_KEY = "idea-board-areas";
 const TARGET_KEY = "idea-board-target";
+const UNSENT_KEY = "idea-board-inbox-unsent"; // まだ送れていない付箋のID（開き直しても送り直せるように）
 // 領域の色（PC版の付箋の色と同じ並び）
 const AREA_COLORS = ["#E8D96A", "#F0A8BC", "#93C9EE", "#A3D98F", "#C3AEEE", "#C6C1B6"];
 const DEFAULT_TAGS = [
@@ -77,6 +78,8 @@ export default function MobileQuickAdd() {
   const [newArea, setNewArea] = useState("");
   const [areaEditOpen, setAreaEditOpen] = useState(false);
   const [picked, setPicked] = useState([]);   // 選んだ付箋のID
+  // 直している付箋 { id, target, draft }。draft は「書く」に書きかけていた内容（終わったら戻す）
+  const [editing, setEditing] = useState(null);
   const [projects, setProjects] = useState([]);     // クラウドにあるプロジェクト
   const [target, setTarget] = useState(null);       // 送り先 {id, name}
   const [targetOpen, setTargetOpen] = useState(false);
@@ -90,6 +93,9 @@ export default function MobileQuickAdd() {
   const [newCat, setNewCat] = useState("");
   const [loaded, setLoaded] = useState(false);
   const areaRef = useRef(null);
+  const itemsRef = useRef([]);            // 送信が終わった時点の最新の付箋（送っている間に直されたかを見る）
+  itemsRef.current = items;
+  const pushChain = useRef(Promise.resolve()); // 送信は1つずつ順に（古い版が後から届いて上書きしないように）
 
   // 端末内に保存したものを読み戻す
   useEffect(() => {
@@ -109,6 +115,8 @@ export default function MobileQuickAdd() {
     if (Array.isArray(ar)) setAreas(ar);
     const tg = read(TARGET_KEY);
     if (tg && tg.id) setTarget(tg);
+    const us = read(UNSENT_KEY);
+    if (Array.isArray(us)) setUnsent(us);
     setLoaded(true);
   }, []);
 
@@ -121,6 +129,18 @@ export default function MobileQuickAdd() {
     if (!loaded) return;
     try { localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog)); } catch (e) {}
   }, [catalog, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem(UNSENT_KEY, JSON.stringify(unsent)); } catch (e) {}
+  }, [unsent, loaded]);
+
+  // 消した付箋は未送信の一覧からも外す
+  useEffect(() => {
+    if (!loaded) return;
+    if (unsent.some((id) => !items.some((i) => i.id === id)))
+      setUnsent((u) => u.filter((id) => items.some((i) => i.id === id)));
+  }, [items, unsent, loaded]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -306,6 +326,7 @@ export default function MobileQuickAdd() {
       targetProjectId: target?.id || "", targetProjectName: target?.name || "",
     };
     setItems((is) => [...is, item]); // 下に足していく（この順番でパソコンに並ぶ）
+    itemsRef.current = [...itemsRef.current, item];
     // クラウド同期を設定していれば、その場でPCへ送る（失敗しても手元には残る）
     if (cloud && cloudUsable) {
       setUnsent((u) => [...u, item.id]);
@@ -325,6 +346,61 @@ export default function MobileQuickAdd() {
     setItems((is) => is.filter((i) => i.id !== id));
     setPicked((p) => p.filter((x) => x !== id));
   };
+
+  // --- 直す（「書く」と同じ画面で） ---
+  const openEdit = (i) => {
+    // 書きかけの内容は控えておき、終わったら戻す（すでに直している途中なら、その控えを引き継ぐ）
+    const draft = editing ? editing.draft : { text, title, useTitle, color, tags, area };
+    setEditing({
+      id: i.id,
+      target: i.targetProjectId ? { id: i.targetProjectId, name: i.targetProjectName || "" } : null,
+      draft,
+    });
+    setText(i.text || "");
+    setTitle(i.title || "");
+    setUseTitle(!!i.title);
+    setColor(i.color ?? DEFAULT_COLOR);
+    setTags(Array.isArray(i.tags) ? i.tags : []);
+    setArea(i.area || "");
+    setTab("write");
+  };
+
+  const closeEdit = () => {
+    const d = editing?.draft;
+    setEditing(null);
+    if (d) {
+      setText(d.text); setTitle(d.title); setUseTitle(d.useTitle);
+      setColor(d.color); setTags(d.tags); setArea(d.area);
+    }
+    setTab("list");
+  };
+
+  const saveEdit = () => {
+    if (!editing || (!text.trim() && !title.trim())) return;
+    const old = items.find((i) => i.id === editing.id);
+    if (!old) { closeEdit(); return; }
+    const next = {
+      title: useTitle ? title.trim() : "", text: text.trim(), color, tags, area,
+      targetProjectId: editing.target?.id || "", targetProjectName: editing.target?.name || "",
+    };
+    const keyOf = (x) => JSON.stringify([x.title || "", x.text || "", x.color, x.tags || [], x.area || "", x.targetProjectId || "", x.targetProjectName || ""]);
+    if (keyOf(old) !== keyOf(next)) {
+      // 版番号を上げる。パソコンは取り込み済みの付箋をこの番号で見分けて書き換える
+      const upd = { ...old, ...next, rev: (old.rev || 0) + 1 };
+      setItems((is) => is.map((i) => (i.id === upd.id ? upd : i)));
+      itemsRef.current = itemsRef.current.map((i) => (i.id === upd.id ? upd : i));
+      if (cloud && cloudUsable) {
+        setUnsent((u) => [...new Set([...u, upd.id])]);
+        pushToCloud([upd]);
+      }
+      say("保存しました");
+    }
+    closeEdit();
+  };
+
+  // 送り先: 直しているときはその付箋だけ、そうでなければ次に書く付箋の既定
+  const curTarget = editing ? editing.target : target;
+  const chooseTarget = (t) => (editing ? setEditing((e) => ({ ...e, target: t })) : setTarget(t));
 
   // --- 選ぶ ---
   const togglePick = (id) =>
@@ -448,16 +524,27 @@ export default function MobileQuickAdd() {
 
   const cloudUsable = !standalone; // ホーム画面アプリでは設定が消えるため使わない
 
-  const pushToCloud = async (list) => {
-    if (!cloud || !cloudUsable || !list || list.length === 0) return false;
-    try {
-      await cloudPush(cloud, list.map(toPayload));
-      setUnsent((u) => u.filter((id) => !list.some((x) => x.id === id)));
-      return true;
-    } catch (e) {
-      setUnsent((u) => [...new Set([...u, ...list.map((x) => x.id)])]);
-      return false;
-    }
+  // 送れたものだけ未送信から外す。送っている間に直された付箋（版番号が変わった）は未送信のまま残し、続けて送る
+  const pushToCloud = (list) => {
+    if (!cloud || !cloudUsable || !list || list.length === 0) return Promise.resolve(false);
+    const run = async () => {
+      // 送る直前の最新の中身で送る
+      const latest = list.map((x) => itemsRef.current.find((i) => i.id === x.id)).filter(Boolean);
+      if (latest.length === 0) return true;
+      let done = [];
+      try {
+        done = await cloudPush(cloud, latest.map(toPayload));
+      } catch (e) { done = []; }
+      const sentRev = new Map(latest.filter((x) => done.includes(x.id)).map((x) => [x.id, x.rev || 0]));
+      const stale = latest.filter((x) => sentRev.has(x.id) && (itemsRef.current.find((i) => i.id === x.id)?.rev || 0) !== sentRev.get(x.id));
+      const ok = [...sentRev.keys()].filter((id) => !stale.some((x) => x.id === id));
+      setUnsent((u) => [...new Set([...u.filter((id) => !ok.includes(id)), ...latest.filter((x) => !ok.includes(x.id)).map((x) => x.id)])]);
+      if (stale.length > 0) pushToCloud(stale);
+      return ok.length === latest.length;
+    };
+    const p = pushChain.current.then(run, run);
+    pushChain.current = p.catch(() => {});
+    return p;
   };
 
   // まだ送れていないものをまとめて送り直す
@@ -555,7 +642,7 @@ export default function MobileQuickAdd() {
       {/* タブ */}
       <div style={{ display: "flex", background: "#4A463E" }}>
         {[
-          ["write", "書く"],
+          ["write", editing ? "直す" : "書く"],
           ["list", `ためた分 (${items.length})`],
         ].map(([k, label]) => (
           <button
@@ -623,7 +710,7 @@ export default function MobileQuickAdd() {
             >
               <span style={{ fontSize: 11, color: "#9C9587", flexShrink: 0 }}>送り先</span>
               <span style={{ flex: 1, fontSize: 13.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {target ? target.name : "指定なし"}
+                {curTarget ? curTarget.name : "指定なし"}
               </span>
               <span style={{ fontSize: 11, color: "#6B665C" }}>変更</span>
             </div>
@@ -792,7 +879,11 @@ export default function MobileQuickAdd() {
             return (
               <div
                 key={i.id}
+                data-item
+                onClick={() => openEdit(i)}
                 style={{
+                  cursor: "pointer",
+                  outline: editing?.id === i.id ? "2px solid #3E3A33" : "none",
                   background: col.bg, borderTop: `6px solid ${col.edge}`, borderRadius: 5,
                   boxShadow: "1px 3px 7px rgba(60,50,30,.16)", padding: "8px 10px 10px", marginBottom: 10,
                   overflow: "hidden", maxWidth: "100%",
@@ -802,6 +893,7 @@ export default function MobileQuickAdd() {
                   <input
                     type="checkbox"
                     checked={picked.includes(i.id)}
+                    onClick={(e) => e.stopPropagation()}
                     onChange={() => togglePick(i.id)}
                     style={{ width: 20, height: 20, flexShrink: 0, marginTop: 2, cursor: "pointer" }}
                   />
@@ -815,7 +907,7 @@ export default function MobileQuickAdd() {
                       {i.text}
                     </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
+                  <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
                     <button
                       onClick={() => moveItem(i.id, -1)}
                       title="上へ"
@@ -933,18 +1025,30 @@ export default function MobileQuickAdd() {
 
       {/* 追加ボタン（書くタブのみ） */}
       {tab === "write" && (
-        <div style={{ position: "absolute", left: 14, right: 14, bottom: 16 }}>
+        <div style={{ position: "absolute", left: 14, right: 14, bottom: 16, display: "flex", gap: 8 }}>
+          {editing && (
+            <button
+              onClick={closeEdit}
+              style={{
+                flex: "0 0 32%", border: "1px solid #C9C2B2", borderRadius: 12, background: "#FFFDF6",
+                color: "#3E3A33", fontSize: 16, fontWeight: 700, padding: "15px 0",
+                cursor: "pointer", boxShadow: "0 4px 14px rgba(30,25,15,.18)",
+              }}
+            >
+              やめる
+            </button>
+          )}
           <button
-            onClick={add}
+            onClick={editing ? saveEdit : add}
             disabled={!text.trim() && !title.trim()}
             style={{
-              width: "100%", border: "none", borderRadius: 12,
+              flex: 1, border: "none", borderRadius: 12,
               background: text.trim() || title.trim() ? "#3E3A33" : "#C9C2B2",
               color: "#F6F2E9", fontSize: 16, fontWeight: 700, padding: "15px 0",
               cursor: "pointer", boxShadow: "0 4px 14px rgba(30,25,15,.3)",
             }}
           >
-            ＋ アイデアボックスに入れる
+            {editing ? "保存" : "＋ アイデアボックスに入れる"}
           </button>
         </div>
       )}
@@ -973,11 +1077,11 @@ export default function MobileQuickAdd() {
               </p>
 
               <button
-                onClick={() => { setTarget(null); setTargetOpen(false); }}
+                onClick={() => { chooseTarget(null); setTargetOpen(false); }}
                 style={{
                   display: "block", width: "100%", textAlign: "left", cursor: "pointer",
-                  border: !target ? "2px solid #3E3A33" : "1px solid #E4DFD2",
-                  background: !target ? "rgba(62,58,51,.07)" : "#fff",
+                  border: !curTarget ? "2px solid #3E3A33" : "1px solid #E4DFD2",
+                  background: !curTarget ? "rgba(62,58,51,.07)" : "#fff",
                   borderRadius: 10, padding: "11px 13px", marginBottom: 6,
                 }}
               >
@@ -986,11 +1090,11 @@ export default function MobileQuickAdd() {
               </button>
 
               {projects.map((p) => {
-                const on = target?.id === p.id;
+                const on = curTarget?.id === p.id;
                 return (
                   <button
                     key={p.id}
-                    onClick={() => { setTarget({ id: p.id, name: p.name }); setTargetOpen(false); }}
+                    onClick={() => { chooseTarget({ id: p.id, name: p.name }); setTargetOpen(false); }}
                     style={{
                       display: "block", width: "100%", textAlign: "left", cursor: "pointer",
                       border: on ? "2px solid #3E3A33" : "1px solid #E4DFD2",
@@ -1358,6 +1462,7 @@ export default function MobileQuickAdd() {
                   b: [
                     "「ためた分」タブに、書いたものが上から順に並びます。**この順番のままパソコンに取り込まれます。**",
                     "右の **↑↓** で順番を入れ替えられます。",
+                    "付箋を**タップ**すると、書いたときと同じ画面で直せます。",
                     "左のチェックを付けると、**選んだものだけ**を送る・書き出す・消すことができます。何も選ばなければ全部が対象です。",
                   ],
                 },

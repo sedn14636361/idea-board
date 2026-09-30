@@ -14,14 +14,13 @@ async function route(r, who) {
   const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" };
   if (req.method() === "OPTIONS") return r.fulfill({ status: 204, headers: cors });
   if (net.offline.has(who)) return r.abort("internetdisconnected");
-  if (url.includes("/documents/inbox/")) return r.fulfill({ status: 200, contentType: "application/json", headers: cors, body: '{"documents":[]}' });
   if (net.failList && req.method() === "GET" && /\/items(\?|$)/.test(url))
     return r.fulfill({ status: 500, contentType: "application/json", headers: cors, body: "{}" });
   let res;
   try { res = await F.fetch(url, { method: req.method(), body: req.postData() }); }
   catch (e) { return r.abort("connectionreset"); }
   const body = await res.json();
-  if (req.method() === "PATCH" && res.ok) {
+  if (req.method() === "PATCH" && res.ok && url.includes("/documents/projects/")) {
     const id = decodeURIComponent((url.match(/\/items\/([^?]+)/) || [])[1] || "");
     if (!id.startsWith("__")) writes.push({ who, id, at: Date.now(), ut: body.updateTime });
   }
