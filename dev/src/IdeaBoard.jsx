@@ -4,6 +4,7 @@ import {
   projectList, projectPushSplit, projectPullSplit, projectRemoveSplit, projectHead, hashOf,
   cloudDiagnose, makeRoomKey, FIRESTORE_RULES, tagsPush, tagsPull,
 } from "./cloud.js";
+import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -660,8 +661,10 @@ export default function IdeaBoard() {
   const [previewOpen, setPreviewOpen] = useState(false);   // 届いた付箋の確認画面
   const [previewPicked, setPreviewPicked] = useState([]);  // 貼るものとして選んだID
   const [tagSyncMsg, setTagSyncMsg] = useState("");
-  const tagsLoaded = useRef(false);   // クラウドから読み終わったか
-  const tagsSaved = useRef("");       // 最後にクラウドへ上げた内容
+  const tagBusy = useRef(false);      // タグ表を合わせている最中
+  const tagAgain = useRef(false);     // 合わせている間にまた変わった → 終わったらもう一度
+  const tagSynced = useRef("");       // 最後にサーバーとそろえた内容（同じなら合わせに行かない）
+  const tagsNowRef = useRef({ presetTags: [], alertTags: [] }); // 合わせている間に変わったかを見るための最新の値
   const cloudSavedAt = useRef({});  // プロジェクトごとの最終アップ時刻
   const [setupOpen, setSetupOpen] = useState(false);   // かんたん設定の画面
   const [setupStep, setSetupStep] = useState(0);
@@ -763,46 +766,57 @@ export default function IdeaBoard() {
   };
 
   // --- タグ表の共有（どの端末でも同じタグを使う） ---
-  // クラウドにあるものを正とし、起動のたびに読み直す
-  const pullTags = async (conf = cloud) => {
-    if (!conf) return;
+  // 6.3.0 までは一覧をまるごと上書きしており、古い一覧を持つ端末が他の端末で足したタグを消していた。
+  // 「前回そろえた時点」「この端末」「サーバー」の3つを比べて合わせる（tagsync.js）。足したタグは消さない
+  tagsNowRef.current = { presetTags: settings.presetTags || [], alertTags: settings.alertTags || [] };
+  const TAG_BASE_KEY = "idea-board-tag-base";
+  const syncTagsNow = async (conf = cloud) => {
+    if (!conf) return false;
+    if (tagBusy.current) { tagAgain.current = true; return false; }
+    tagBusy.current = true;
+    let ok = false;
     try {
-      const r = await tagsPull(conf);
-      if (r) {
-        setSettings((st) => ({
-          ...st,
-          presetTags: r.presetTags,
-          alertTags: r.alertTags.length > 0 ? r.alertTags : st.alertTags,
-        }));
-        tagsSaved.current = JSON.stringify({ presetTags: r.presetTags, alertTags: r.alertTags });
-      } else {
-        // クラウドにまだ無ければ、手元のものを置いておく
-        const data = { presetTags: settings.presetTags || [], alertTags: settings.alertTags || [] };
-        await tagsPush(conf, data);
-        tagsSaved.current = JSON.stringify(data);
-      }
-    } catch (e) { /* つながらないときは手元のものを使う */ }
-    tagsLoaded.current = true;
+      const snap = tagsNowRef.current;
+      let base = null;
+      try { base = JSON.parse((await storeGet(TAG_BASE_KEY)) || "null"); } catch (e) { base = null; }
+      const io = { pull: () => tagsPull(conf), push: (data, expect) => tagsPush(conf, data, expect) };
+      // 一度もそろえていない端末が初期のままなら、サーバーの内容をそのまま使う（他で消したタグを生き返らせない）
+      const r = await syncTags(io, base, snap, (l) => sameTags(l.presetTags, DEFAULT_SETTINGS.presetTags));
+      try { await storeSet(TAG_BASE_KEY, JSON.stringify(r.base)); } catch (e) {}
+      tagSynced.current = JSON.stringify(r.merged);
+      // 合わせている間にこの端末で変えた分は、合わせた結果の上に乗せる
+      const now = tagsNowRef.current;
+      const next = sameTags(now, snap) ? r.merged : mergeTags(snap, now, r.merged);
+      if (!sameTags(next, now)) setSettings((st) => ({ ...st, presetTags: next.presetTags, alertTags: next.alertTags }));
+      if (!sameTags(next, r.merged)) tagAgain.current = true;
+      ok = true;
+    } catch (e) { /* つながらないときは手元のものを使い、次の機会（変更・電波が戻る・開き直す）に合わせる */ }
+    tagBusy.current = false;
+    if (tagAgain.current) { tagAgain.current = false; syncTagsNow(conf); }
+    return ok;
   };
 
+  // 開いたとき（設定を読み終わってから）に合わせる
   useEffect(() => {
-    if (!cloud) return;
-    tagsLoaded.current = false;
-    pullTags();
-  }, [cloud]);
+    if (!cloud || !loaded) return;
+    syncTagsNow();
+  }, [cloud, loaded]);
 
-  // タグを変えたらクラウドにも反映する
+  // タグを変えたら3秒後に合わせる
   useEffect(() => {
-    if (!cloud || !loaded || !tagsLoaded.current) return;
-    const data = { presetTags: settings.presetTags || [], alertTags: settings.alertTags || [] };
-    const body = JSON.stringify(data);
-    if (body === tagsSaved.current) return;
-    const t = setTimeout(async () => {
-      const ok = await tagsPush(cloud, data).catch(() => false);
-      if (ok) tagsSaved.current = body;
-    }, 3000);
+    if (!cloud || !loaded) return;
+    if (JSON.stringify({ presetTags: settings.presetTags || [], alertTags: settings.alertTags || [] }) === tagSynced.current) return;
+    const t = setTimeout(() => syncTagsNow(), 3000);
     return () => clearTimeout(t);
   }, [settings.presetTags, settings.alertTags, cloud, loaded]);
+
+  // 電波が戻ったら合わせる
+  useEffect(() => {
+    if (!cloud) return;
+    const on = () => syncTagsNow();
+    window.addEventListener("online", on);
+    return () => window.removeEventListener("online", on);
+  }, [cloud]);
 
   // --- プロジェクトの共有（パソコン同士で同じボードを使う） ---
   const deviceName = () => {
@@ -6064,8 +6078,7 @@ export default function IdeaBoard() {
                   <button
                     onClick={async () => {
                       setTagSyncMsg("読み込み中…");
-                      await pullTags();
-                      setTagSyncMsg("読み込みました");
+                      setTagSyncMsg((await syncTagsNow()) ? "読み込みました" : "読み込めませんでした（通信を確認してください）");
                       setTimeout(() => setTagSyncMsg(""), 2500);
                     }}
                     style={{ border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontSize: 10.5, padding: "4px 10px", cursor: "pointer", whiteSpace: "nowrap" }}

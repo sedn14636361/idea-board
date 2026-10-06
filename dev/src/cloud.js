@@ -523,46 +523,34 @@ export const makeRoomKey = () => {
 // プロジェクト一覧には出ないようにしている。
 const TAGS_DOC = "__tags";
 
-export async function tagsPush(conf, data) {
+// タグ表を書く。expect: { updateTime } … 読んだときのままなら書く／{ exists: false } … まだ無ければ書く
+// 返り値: { ok, conflict }（conflict は「他の端末が先に書いた」。読み直して合わせ直す）
+// 6.3.0 までは条件なしの上書きで、古い一覧を持つ端末が他の端末の足したタグを消していた
+export async function tagsPush(conf, data, expect) {
   const token = await signIn(conf);
-  const body = JSON.stringify({
-    fields: {
-      payload: { stringValue: JSON.stringify(data) },
-      savedAt: { integerValue: String(Date.now()) },
-    },
-  });
-  const url = `${projUrl(conf)}/${TAGS_DOC}`;
-  // 既にあれば書き換え、無ければ作る
-  const r = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body,
-  });
-  if (r.ok) return true;
-  const r2 = await fetch(`${projUrl(conf)}?documentId=${TAGS_DOC}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body,
-  });
-  return r2.ok;
+  const r = await putDoc(conf, token, TAGS_DOC, {
+    payload: { stringValue: JSON.stringify(data) },
+    savedAt: { integerValue: String(Date.now()) },
+  }, expect);
+  if (r.ok) return { ok: true, conflict: false };
+  return { ok: false, conflict: r.status === 400 || r.status === 404 || r.status === 409 || r.status === 412 };
 }
 
+// タグ表を読む。返り値: { data: { presetTags, alertTags }, updateTime } / まだ無ければ null。読めなければ例外
 export async function tagsPull(conf) {
   const token = await signIn(conf);
   const r = await fetch(`${projUrl(conf)}/${TAGS_DOC}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!r.ok) return null;
-  try {
-    const d = await r.json();
-    const data = JSON.parse(d.fields?.payload?.stringValue || "null");
-    if (!data || !Array.isArray(data.presetTags)) return null;
-    return {
-      presetTags: data.presetTags,
-      alertTags: Array.isArray(data.alertTags) ? data.alertTags : [],
-      savedAt: Number(d.fields?.savedAt?.integerValue || 0),
-    };
-  } catch (e) {
-    return null;
-  }
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`タグを読めませんでした (${r.status})`);
+  const d = await r.json();
+  let data = null;
+  try { data = JSON.parse(d.fields?.payload?.stringValue || "null"); } catch (e) { data = null; }
+  // 中身が壊れていたら data: null（「全部消された」とは見なさない。syncTags がこの端末の内容で直す）
+  const ok = data && Array.isArray(data.presetTags);
+  return {
+    data: ok ? { presetTags: data.presetTags, alertTags: Array.isArray(data.alertTags) ? data.alertTags : [] } : null,
+    updateTime: d.updateTime || null,
+  };
 }

@@ -3,6 +3,7 @@ import {
   loadCloudConf, saveCloudConf, cloudTest, cloudPush, loadCloudDraft, saveCloudDraft, projectList,
   tagsPush, tagsPull,
 } from "./cloud.js";
+import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { APP_VERSION } from "./version.js";
 
 // ホーム画面のアイコンから開いたか（この開き方では設定が保持されないことがある）
@@ -25,6 +26,9 @@ const CATALOG_KEY = "idea-board-tag-catalog";
 const AREAS_KEY = "idea-board-areas";
 const TARGET_KEY = "idea-board-target";
 const UNSENT_KEY = "idea-board-inbox-unsent"; // まだ送れていない付箋のID（開き直しても送り直せるように）
+const TAG_BASE_KEY = "idea-board-tag-base";   // タグ表を最後にサーバーとそろえた内容（三方向マージの基準。tagsync.js）
+const ALERT_KEY = "idea-board-alert-tags";    // 赤で目立たせるタグ（スマホでは変えないが、サーバーから来たものを覚えておく）
+const COMPOSE_KEY = "idea-board-compose";     // 「書く」で選んでいる色・タグ・まとめ先・タイトルのチェック（送っても残す）
 // 領域の色（PC版の付箋の色と同じ並び）
 const AREA_COLORS = ["#E8D96A", "#F0A8BC", "#93C9EE", "#A3D98F", "#C3AEEE", "#C6C1B6"];
 const DEFAULT_TAGS = [
@@ -86,8 +90,13 @@ export default function MobileQuickAdd() {
   const standalone = isStandalone();           // ホーム画面から開いたか
   const [catalog, setCatalog] = useState(DEFAULT_TAGS);  // タグ表（編集できる）
   const [alertTags, setAlertTags] = useState(DEFAULT_ALERT_TAGS); // 赤で目立たせるタグ
-  const tagsLoaded = useRef(false);
-  const tagsSaved = useRef("");
+  const catalogRef = useRef(DEFAULT_TAGS);   // 合わせている間に変わったかを見るための最新の値
+  const alertRef = useRef(DEFAULT_ALERT_TAGS);
+  catalogRef.current = catalog;
+  alertRef.current = alertTags;
+  const tagBusy = useRef(false);   // 合わせている最中
+  const tagAgain = useRef(false);  // 合わせている間にまた変わった → 終わったらもう一度
+  const tagSynced = useRef("");    // 最後にサーバーとそろえた内容（同じなら合わせに行かない）
   const [tagEditOpen, setTagEditOpen] = useState(false);
   const [newTag, setNewTag] = useState({ cat: 0, name: "" });
   const [newCat, setNewCat] = useState("");
@@ -117,6 +126,15 @@ export default function MobileQuickAdd() {
     if (tg && tg.id) setTarget(tg);
     const us = read(UNSENT_KEY);
     if (Array.isArray(us)) setUnsent(us);
+    const al = read(ALERT_KEY);
+    if (Array.isArray(al)) setAlertTags(al);
+    const cp = read(COMPOSE_KEY);
+    if (cp) {
+      if (Number.isInteger(cp.color) && COLORS[cp.color]) setColor(cp.color);
+      if (Array.isArray(cp.tags)) setTags(cp.tags);
+      if (typeof cp.area === "string") setArea(cp.area);
+      if (typeof cp.useTitle === "boolean") setUseTitle(cp.useTitle);
+    }
     setLoaded(true);
   }, []);
 
@@ -155,42 +173,80 @@ export default function MobileQuickAdd() {
     } catch (e) {}
   }, [target, loaded]);
 
-  // タグ表はクラウドにあるものを正とし、開くたびに読み直す
-  const pullTags = async (conf = cloud) => {
-    if (!conf) return;
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem(ALERT_KEY, JSON.stringify(alertTags)); } catch (e) {}
+  }, [alertTags, loaded]);
+
+  // 「書く」で選んでいるものを覚えておく（開き直しても残る）。直している間は、その付箋の値なので覚えない
+  useEffect(() => {
+    if (!loaded || editing) return;
+    try { localStorage.setItem(COMPOSE_KEY, JSON.stringify({ color, tags, area, useTitle })); } catch (e) {}
+  }, [color, tags, area, useTitle, loaded, editing]);
+
+  // タグの一覧から消えたタグは、選んでいるタグからも外す（見えないまま付いて送られないように）
+  useEffect(() => {
+    if (!loaded || editing) return;
+    const all = new Set(catalog.flatMap((c) => c.tags || []));
+    if (tags.some((t) => !all.has(t))) setTags((ts) => ts.filter((t) => all.has(t)));
+  }, [catalog, tags, loaded, editing]);
+
+  // まとめ先の一覧から消したまとめ先も同じ
+  useEffect(() => {
+    if (!loaded || editing || !area) return;
+    if (!areas.some((a) => a.name === area)) setArea("");
+  }, [areas, area, loaded, editing]);
+
+  // --- タグ表をサーバーと合わせる（tagsync.js の三方向マージ。足したタグは消さない） ---
+  const readTagBase = () => {
+    try { return JSON.parse(localStorage.getItem(TAG_BASE_KEY) || "null"); } catch (e) { return null; }
+  };
+  const syncTagsNow = async (conf = cloud) => {
+    if (!conf || !cloudUsable) return false;
+    if (tagBusy.current) { tagAgain.current = true; return false; }
+    tagBusy.current = true;
+    let ok = false;
     try {
-      const r = await tagsPull(conf);
-      if (r) {
-        setCatalog(r.presetTags);
-        if (r.alertTags.length > 0) setAlertTags(r.alertTags);
-        tagsSaved.current = JSON.stringify({ presetTags: r.presetTags, alertTags: r.alertTags });
-      } else {
-        const data = { presetTags: catalog, alertTags };
-        await tagsPush(conf, data);
-        tagsSaved.current = JSON.stringify(data);
-      }
-    } catch (e) { /* つながらないときは端末のものを使う */ }
-    tagsLoaded.current = true;
+      const snap = { presetTags: catalogRef.current, alertTags: alertRef.current };
+      const io = { pull: () => tagsPull(conf), push: (data, expect) => tagsPush(conf, data, expect) };
+      // 一度もそろえていない端末が初期のままなら、サーバーの内容をそのまま使う（他で消したタグを生き返らせない）
+      const r = await syncTags(io, readTagBase(), snap, (l) => sameTags(l.presetTags, DEFAULT_TAGS));
+      try { localStorage.setItem(TAG_BASE_KEY, JSON.stringify(r.base)); } catch (e) {}
+      tagSynced.current = JSON.stringify(r.merged);
+      // 合わせている間にこの端末で変えた分は、合わせた結果の上に乗せる
+      const now = { presetTags: catalogRef.current, alertTags: alertRef.current };
+      const next = sameTags(now, snap) ? r.merged : mergeTags(snap, now, r.merged);
+      if (!sameTags(next.presetTags, catalogRef.current)) setCatalog(next.presetTags);
+      if (!sameTags(next.alertTags, alertRef.current)) setAlertTags(next.alertTags);
+      if (!sameTags(next, r.merged)) tagAgain.current = true;
+      ok = true;
+    } catch (e) { /* つながらないときは端末のものを使い、次の機会（変更・電波が戻る・開き直す）に合わせる */ }
+    tagBusy.current = false;
+    if (tagAgain.current) { tagAgain.current = false; syncTagsNow(conf); }
+    return ok;
   };
 
+  // 開いたとき（読み込みが終わってから）に合わせる
   useEffect(() => {
-    if (!cloud || !cloudUsable) return;
-    tagsLoaded.current = false;
-    pullTags();
-  }, [cloud]);
+    if (!cloud || !cloudUsable || !loaded) return;
+    syncTagsNow();
+  }, [cloud, loaded]);
 
-  // タグを変えたらクラウドにも反映する
+  // タグを変えたら3秒後に合わせる
   useEffect(() => {
-    if (!cloud || !cloudUsable || !loaded || !tagsLoaded.current) return;
-    const data = { presetTags: catalog, alertTags };
-    const body = JSON.stringify(data);
-    if (body === tagsSaved.current) return;
-    const t = setTimeout(async () => {
-      const ok = await tagsPush(cloud, data).catch(() => false);
-      if (ok) tagsSaved.current = body;
-    }, 3000);
+    if (!cloud || !cloudUsable || !loaded) return;
+    if (JSON.stringify({ presetTags: catalog, alertTags }) === tagSynced.current) return;
+    const t = setTimeout(() => syncTagsNow(), 3000);
     return () => clearTimeout(t);
   }, [catalog, alertTags, cloud, loaded]);
+
+  // 電波が戻ったら合わせる（電波が無いときに足したタグを送る）
+  useEffect(() => {
+    if (!cloud || !cloudUsable) return;
+    const on = () => syncTagsNow();
+    window.addEventListener("online", on);
+    return () => window.removeEventListener("online", on);
+  }, [cloud]);
 
   // パソコンで共有しているプロジェクトの一覧をもらう
   const refreshProjects = async (conf = cloud) => {
@@ -332,14 +388,19 @@ export default function MobileQuickAdd() {
       setUnsent((u) => [...u, item.id]);
       pushToCloud([item]);
     }
+    // 消すのは書いた文字だけ。色・タグ・まとめ先・タイトルのチェックは次の付箋にも引き継ぐ（resetCompose で戻せる）
     setText("");
     setTitle("");
-    setTags([]);
-    setColor(DEFAULT_COLOR);
-    setUseTitle(false);
-    // まとめ先は続けて使うことが多いので残しておく
     say("追加しました");
     areaRef.current?.focus();
+  };
+
+  // 色・タグ・まとめ先・タイトルのチェックを最初に戻す（書いている文字とタグの一覧には触らない）
+  const resetCompose = () => {
+    setColor(DEFAULT_COLOR);
+    setTags([]);
+    setArea("");
+    setUseTitle(false);
   };
 
   const remove = (id) => {
@@ -715,6 +776,21 @@ export default function MobileQuickAdd() {
               <span style={{ fontSize: 11, color: "#6B665C" }}>変更</span>
             </div>
           )}
+
+          {/* 色・タグなどを最初に戻す */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            <button
+              onClick={resetCompose}
+              disabled={color === DEFAULT_COLOR && tags.length === 0 && area === "" && !useTitle}
+              style={{
+                border: "1px solid #C9C2B2", borderRadius: 14, background: "transparent", fontSize: 11, padding: "3px 12px",
+                color: color === DEFAULT_COLOR && tags.length === 0 && area === "" && !useTitle ? "#C9C2B2" : "#6B665C",
+                cursor: "pointer",
+              }}
+            >
+              色・タグ・まとめ先を戻す
+            </button>
+          </div>
 
           {/* まとめ先（PCで領域になる） */}
           <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
@@ -1222,7 +1298,7 @@ export default function MobileQuickAdd() {
                     タグはパソコンと共有されます。ここで変えると向こうにも反映されます。
                   </span>
                   <button
-                    onClick={() => { pullTags(); say("読み直しました"); }}
+                    onClick={async () => { say((await syncTagsNow()) ? "読み直しました" : "読み直せませんでした（電波を確認してください）"); }}
                     style={{ border: "1px solid #C9C2B2", borderRadius: 8, background: "#fff", color: "#3E3A33", fontSize: 11, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
                   >
                     読み直す
@@ -1453,8 +1529,9 @@ export default function MobileQuickAdd() {
                     "「書く」タブで文章を入力し、下の大きなボタンでアイデアボックスに入れます。",
                     "**タイトル**にチェックを入れると、見出しを付けられます。パソコンでは一覧の見出しに使われます。",
                     "**送り先**を選ぶと、そのプロジェクトを開いているパソコンで、最初から選ばれた状態で出てきます。指定しなくても送れます。",
-                    "**まとめ先**を選ぶと、パソコンでその名前の囲みが作られ、中に付箋が並びます（例: 第1章／キャラ案）。一度選ぶと次の付箋にも引き継がれます。",
+                    "**まとめ先**を選ぶと、パソコンでその名前の囲みが作られ、中に付箋が並びます（例: 第1章／キャラ案）。",
                     "**色**と**タグ**は、あとで分類するための目印です。どちらも付けなくてかまいません。",
+                    "色・タグ・まとめ先・タイトルのチェックは、次の付箋にも引き継がれます。「**色・タグ・まとめ先を戻す**」で最初に戻せます。",
                   ],
                 },
                 {
