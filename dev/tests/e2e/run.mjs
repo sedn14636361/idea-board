@@ -28,6 +28,7 @@ const all = [
   ["persist", "persist.mjs", { HTML: html, DIST: dist }],            // 設定の保持
   ["sw-scope", "sw-scope.mjs", { NEW: dist }],                       // PC版とスマホ版を同じ場所に置く（Pages）
   ["mobile-edit", "mobile-edit.mjs", { BASE }],                      // スマホで直す → パソコンの付箋も書き換わる
+  ["tags-keep", "tags-keep.mjs", { BASE }],                          // 足したタグが消えない・送っても選択が残る
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);
