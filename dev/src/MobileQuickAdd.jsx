@@ -28,6 +28,7 @@ const TARGET_KEY = "idea-board-target";
 const UNSENT_KEY = "idea-board-inbox-unsent"; // まだ送れていない付箋のID（開き直しても送り直せるように）
 const TAG_BASE_KEY = "idea-board-tag-base";   // タグ表を最後にサーバーとそろえた内容（三方向マージの基準。tagsync.js）
 const ALERT_KEY = "idea-board-alert-tags";    // 赤で目立たせるタグ（スマホでは変えないが、サーバーから来たものを覚えておく）
+const RELOAD_DRAFT_KEY = "idea-board-reload-draft"; // 新しい版へ切り替えるときに、書きかけの文字を持ち越す（sessionStorage）
 const COMPOSE_KEY = "idea-board-compose";     // 「書く」で選んでいる色・タグ・まとめ先・タイトルのチェック（送っても残す）
 // 領域の色（PC版の付箋の色と同じ並び）
 const AREA_COLORS = ["#E8D96A", "#F0A8BC", "#93C9EE", "#A3D98F", "#C3AEEE", "#C6C1B6"];
@@ -101,6 +102,7 @@ export default function MobileQuickAdd() {
   const [newTag, setNewTag] = useState({ cat: 0, name: "" });
   const [newCat, setNewCat] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false); // 新しい版がそろった（「切り替える」を出す）
   const areaRef = useRef(null);
   const itemsRef = useRef([]);            // 送信が終わった時点の最新の付箋（送っている間に直されたかを見る）
   itemsRef.current = items;
@@ -135,8 +137,61 @@ export default function MobileQuickAdd() {
       if (typeof cp.area === "string") setArea(cp.area);
       if (typeof cp.useTitle === "boolean") setUseTitle(cp.useTitle);
     }
+    // 新しい版へ切り替えたときに持ち越した書きかけ
+    try {
+      const d = JSON.parse(sessionStorage.getItem(RELOAD_DRAFT_KEY) || "null");
+      sessionStorage.removeItem(RELOAD_DRAFT_KEY);
+      if (d) { if (typeof d.text === "string") setText(d.text); if (typeof d.title === "string") setTitle(d.title); }
+    } catch (e) {}
     setLoaded(true);
   }, []);
+
+  // --- 新しい版の確認 ---
+  // ホーム画面のアプリは開き直さずに再開されることが多く、開いたときだけの確認では新しい版に気づけない。
+  // 開いたとき・画面に戻ってきたときに Service Worker に確かめてもらい、新しい版がそろっていたら知らせる
+  const checkUpdate = async () => {
+    if (!("serviceWorker" in navigator) || !window.caches) return;
+    try {
+      const reg = await navigator.serviceWorker.getRegistration(location.href);
+      if (!reg) return;
+      await reg.update().catch(() => {});        // mobile-sw.js 自体が新しくなっていれば入れ替える
+      const sw = navigator.serviceWorker.controller || reg.active;
+      if (sw) {
+        // 新しい版を取り込んでもらう（古い版の mobile-sw.js は返事をしないので、待ちすぎない）
+        await new Promise((resolve) => {
+          const ch = new MessageChannel();
+          const t = setTimeout(resolve, 20000);
+          ch.port1.onmessage = () => { clearTimeout(t); resolve(); };
+          sw.postMessage("check-update", [ch.port2]);
+        });
+      }
+      // 保存済みのページが、いま動いている版と違うファイルを読み込むなら、新しい版がそろっている
+      const hit = await caches.match(new URL("./mobile.html", location.href).href, { ignoreSearch: true });
+      if (!hit) return;
+      const html = await hit.text();
+      const mine = [...document.querySelectorAll('script[type="module"][src]')]
+        .map((el) => new URL(el.getAttribute("src"), location.href).pathname.split("/").pop());
+      if (mine.length > 0 && !mine.every((f) => html.includes(f))) setUpdateReady(true);
+    } catch (e) { /* 確かめられないときは何もしない */ }
+  };
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") checkUpdate(); };
+    const t = setTimeout(checkUpdate, 3000);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+    };
+  }, []);
+
+  // 新しい版へ切り替える。書きかけの文字は持ち越す
+  const applyUpdate = () => {
+    try { sessionStorage.setItem(RELOAD_DRAFT_KEY, JSON.stringify({ text, title })); } catch (e) {}
+    location.reload();
+  };
 
   useEffect(() => {
     if (!loaded) return;
@@ -699,6 +754,19 @@ export default function MobileQuickAdd() {
           ⚙
         </button>
       </div>
+
+      {/* 新しい版の知らせ（直している間は出さない。切り替えると直している途中の内容が残らないため） */}
+      {updateReady && !editing && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#FFF3D6", color: "#5A4A1F", padding: "8px 12px", fontSize: 12.5 }}>
+          <span style={{ flex: 1 }}>新しい版があります</span>
+          <button
+            onClick={applyUpdate}
+            style={{ border: "none", borderRadius: 8, background: "#3E3A33", color: "#F6F2E9", fontSize: 12.5, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+          >
+            切り替える
+          </button>
+        </div>
+      )}
 
       {/* タブ */}
       <div style={{ display: "flex", background: "#4A463E" }}>

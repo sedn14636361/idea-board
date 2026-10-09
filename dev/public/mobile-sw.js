@@ -68,6 +68,19 @@ self.addEventListener("install", (e) => {
   self.skipWaiting();
 });
 
+// ページから「新しい版を確かめて」と頼まれたとき（画面に戻ってきたときなど）。
+// ホーム画面のアプリは開き直さずに再開されることが多く、ページを開いたときだけの確認では新しい版に気づけないため
+self.addEventListener("message", (e) => {
+  if (e.data !== "check-update") return;
+  const port = e.ports && e.ports[0];
+  e.waitUntil(
+    update().then(
+      (changed) => port && port.postMessage({ changed }),
+      () => port && port.postMessage({ changed: false })
+    )
+  );
+});
+
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     (async () => {
