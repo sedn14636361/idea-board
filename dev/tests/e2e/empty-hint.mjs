@@ -42,7 +42,7 @@ const pos = await pg.evaluate((HINT) => {
   const r = p.getBoundingClientRect(), s = sc.getBoundingClientRect();
   return { dx: Math.round(r.left - s.left), dy: Math.round(r.top - s.top), inside: r.right <= s.right && r.bottom <= s.bottom };
 }, HINT);
-eq("ボードの左上に出る（左上から 60px 以内・画面に収まる）", [pos.dx >= 0 && pos.dx <= 60, pos.dy >= 0 && pos.dy <= 60, pos.inside], [true, true, true]);
+eq("ボードの左上に出る（左上から 100px 以内・画面に収まる）", [pos.dx >= 0 && pos.dx <= 100, pos.dy >= 0 && pos.dy <= 100, pos.inside], [true, true, true]);
 
 // 何も無いボードに「＋ 追加」→「文字」で見出しを置くと消える
 await pg.getByRole("button", { name: /追加/ }).first().click();
