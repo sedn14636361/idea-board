@@ -30,6 +30,7 @@ const all = [
   ["mobile-edit", "mobile-edit.mjs", { BASE }],                      // スマホで直す → パソコンの付箋も書き換わる
   ["tags-keep", "tags-keep.mjs", { BASE }],                          // 足したタグが消えない・送っても選択が残る
   ["mobile-update", "mobile-update.mjs", { DIST: dist }],             // 新しい版の知らせと切り替え（スマホ版）
+  ["infinite", "infinite.mjs", { BASE }],                            // 端のないボード
   ["transfer", "transfer.mjs", { BASE }],                            // 付箋を別のボード・プロジェクトへ移す
   ["t-unopened", "t-unopened.mjs", { BASE }],                        // 開いていないプロジェクトもサーバーへ上がる
   ["transfer-cloud", "transfer-cloud.mjs", { BASE }],                // 移したあと、クラウドの両方のプロジェクトが新しい中身になる

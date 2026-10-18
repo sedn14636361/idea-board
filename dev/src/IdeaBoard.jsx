@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import {
   loadCloudConf, saveCloudConf, cloudTest, cloudList, cloudRemove, loadCloudDraft, saveCloudDraft,
   projectList, projectPushSplit, projectPullSplit, projectRemoveSplit, projectHead, hashOf,
   cloudDiagnose, makeRoomKey, FIRESTORE_RULES, tagsPush, tagsPull,
 } from "./cloud.js";
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
+import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
@@ -37,8 +38,6 @@ const MAX_DEPTH = 2; // 0,1,2 の3段階まで
 // 設定画面で変更できる既定値
 const DEFAULT_SETTINGS = {
   grid: 26,          // グリッド間隔(px)
-  canvasW: 3200,     // キャンバス幅
-  canvasH: 2200,     // キャンバス高さ
   noteTagLimit: 3,   // 付箋上に表示するタグ数（超過分は +n に格納）
   overviewZoom: 0.65, // この倍率より縮小したら、付箋を見出し表示に切り替える
   colorNotes: ["", "", "", "", "", ""], // 色ごとの使い分けメモ（設定画面で編集）
@@ -220,7 +219,8 @@ export default function IdeaBoard() {
   const imgResizeRef = useRef(null);
   const imgInputRef = useRef(null);
   const zoneResizeRef = useRef(null);
-  const contentRef = useRef(null);
+  const contentRef = useRef(null);   // ボードの面（背景・何も無い所のクリック）
+  const worldRef = useRef(null);     // 座標の原点 (0,0) の位置。画面の座標→ボードの座標の変換はこれを基準にする
   const noteEls = useRef({});
   const saveTimer = useRef(null);
   const flashTimer = useRef(null);
@@ -232,8 +232,6 @@ export default function IdeaBoard() {
 
   // 設定由来の値
   const GRID = settings.grid || DEFAULT_SETTINGS.grid;
-  const CANVAS_W = settings.canvasW || DEFAULT_SETTINGS.canvasW;
-  const CANVAS_H = settings.canvasH || DEFAULT_SETTINGS.canvasH;
   const snap = (v) => Math.round(v / GRID) * GRID;
   // 縮小して全体を見ているときは、付箋を見出し＋タグの表示に切り替える
   const OVERVIEW_ZOOM = settings.overviewZoom ?? DEFAULT_SETTINGS.overviewZoom;
@@ -307,6 +305,37 @@ export default function IdeaBoard() {
   const zones = board?.zones || [];
   const strokes = board?.strokes || [];
   const images = board?.images || [];
+
+  // ---- 端のないボード（canvas.js） ----
+  // 置いてある物の外側に画面1つ分の余白を取って広さを決める。左・上（マイナス）にも広がる。
+  // 原点 (0,0) は ox, oy だけ右下にずらして描き、見ている場所は viewRef（左上のボード座標）で保つ
+  const [viewSize, setViewSize] = useState({ w: 1200, h: 800 });
+  const grownRef = useRef({ key: null, b: null }); // 見ている間は縮めない（縮めると見ている場所が跳ねる）
+  const box = useMemo(() => contentBox(board), [notes, texts, zones, images, strokes]);
+  const bounds = useMemo(() => {
+    const b = canvasBounds(box, viewSize.w / zoom, viewSize.h / zoom);
+    const g = grownRef.current;
+    const merged = g.key === currentId ? unionBounds(g.b, b) : b;
+    grownRef.current = { key: currentId, b: merged };
+    return merged;
+  }, [box, viewSize, zoom, currentId]);
+  const ox = -bounds.minX, oy = -bounds.minY;
+  const spanW = bounds.maxX - bounds.minX, spanH = bounds.maxY - bounds.minY;
+  const originRef = useRef({ ox: 0, oy: 0 });
+  originRef.current = { ox, oy };
+  const viewRef = useRef({ wx: 0, wy: 0 });  // 画面の左上に見えているボード座標
+  const zoomAnchor = useRef(null);           // 拡大縮小で、指・マウスの下の場所を保つための目印
+  // 画面の座標 → ボードの座標
+  const toWorld = (clientX, clientY) => {
+    const r = worldRef.current?.getBoundingClientRect();
+    const zf = zoomRef.current || 1;
+    return r ? { x: (clientX - r.left) / zf, y: (clientY - r.top) / zf } : { x: 0, y: 0 };
+  };
+  // 画面の左上に見えているボード座標（新しく置く場所の目安）
+  const viewOrigin = () => {
+    const sc = scrollerRef.current, zf = zoomRef.current || 1;
+    return { x: (sc?.scrollLeft || 0) / zf - originRef.current.ox, y: (sc?.scrollTop || 0) / zf - originRef.current.oy };
+  };
 
   const updateBoard = (fn) =>
     setBoards((bs) => bs.map((b) => (b.id === currentId ? fn(b) : b)));
@@ -467,9 +496,40 @@ export default function IdeaBoard() {
     return () => clearTimeout(saveTimer.current);
   }, [projects, currentProjectId, gridMode, zoom, simpleStyle, propMode, settings, loaded]);
 
+  // ---- 見ている場所を保つ（端のないボード） ----
+  // 原点のずれ（左・上へ広がった）・拡大率・ボードが変わったら、同じボード座標が画面の左上に来るようにスクロールし直す。
+  // 拡大縮小のときは、指・マウスの下の場所を保つ（zoomAnchor）
+  useLayoutEffect(() => {
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    const a = zoomAnchor.current;
+    zoomAnchor.current = null;
+    if (a) {
+      sc.scrollLeft = (a.wx + ox) * zoom - a.px;
+      sc.scrollTop = (a.wy + oy) * zoom - a.py;
+    } else {
+      sc.scrollLeft = (viewRef.current.wx + ox) * zoom;
+      sc.scrollTop = (viewRef.current.wy + oy) * zoom;
+    }
+    viewRef.current = { wx: sc.scrollLeft / zoom - ox, wy: sc.scrollTop / zoom - oy };
+  }, [ox, oy, zoom, currentId]);
+
+  useEffect(() => {
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    const onScroll = () => {
+      const zf = zoomRef.current || 1;
+      viewRef.current = { wx: sc.scrollLeft / zf - originRef.current.ox, wy: sc.scrollTop / zf - originRef.current.oy };
+    };
+    const ro = new ResizeObserver(() => setViewSize({ w: sc.clientWidth || 1200, h: sc.clientHeight || 800 }));
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(sc);
+    return () => { sc.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, []);
+
   // ---- 矩形の実測 ----
   useLayoutEffect(() => {
-    const base = contentRef.current?.getBoundingClientRect();
+    const base = worldRef.current?.getBoundingClientRect();
     if (!base) return;
     const zf = zoomRef.current || 1;
     const next = {};
@@ -1287,8 +1347,9 @@ export default function IdeaBoard() {
     // 画面の左上あたりから、空いている場所を探して置く
     const sc = scrollerRef.current;
     const zf = zoom || 1;
-    const startX = ((sc?.scrollLeft || 0) + 60) / zf;
-    const startY = ((sc?.scrollTop || 0) + 80) / zf;
+    const vo = viewOrigin();
+    const startX = vo.x + 60 / zf;
+    const startY = vo.y + 80 / zf;
 
     const NW = 190, NH = 170, GAP = 24;      // 付箋の大きさと間隔
     const PAD = 22, HEAD = 34;               // 領域の内側の余白と見出しぶん
@@ -1633,8 +1694,8 @@ export default function IdeaBoard() {
       const n = makeNote(x, y, parentId, num);
       if (props) Object.assign(n, props);
       if (gridRef.current) {
-        n.x = Math.max(0, snap(n.x));
-        n.y = Math.max(0, snap(n.y));
+        n.x = parentId ? Math.max(0, snap(n.x)) : snap(n.x);
+        n.y = parentId ? Math.max(0, snap(n.y)) : snap(n.y);
       }
       n.z = ++zRef.current;
       return { ...b, nextNum: num + 1, notes: [...b.notes, n] };
@@ -1672,9 +1733,9 @@ export default function IdeaBoard() {
   const addTextCenter = () => {
     const sc = scrollerRef.current;
     const zf = zoom || 1;
-    let x = ((sc?.scrollLeft || 0) + (sc?.clientWidth || 600) / 2) / zf - 60;
-    let y = ((sc?.scrollTop || 0) + 120) / zf;
-    if (gridRef.current) { x = Math.max(0, snap(x)); y = Math.max(0, snap(y)); }
+    let x = viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - 60;
+    let y = viewOrigin().y + 120 / zf;
+    if (gridRef.current) { x = snap(x); y = snap(y); }
     zRef.current += 1;
     setTexts((ts) => [...ts, { id: nextId(), x, y, text: "", size: 1, z: zRef.current }]);
   };
@@ -1712,25 +1773,25 @@ export default function IdeaBoard() {
         notes: b.notes.map((n) => {
           const g = (d.group || []).find((x) => x.id === n.id);
           if (!g) return n;
-          let nx = Math.max(0, g.origX + dx);
-          let ny = Math.max(0, g.origY + dy);
-          if (gridRef.current) { nx = Math.max(0, snap(nx)); ny = Math.max(0, snap(ny)); }
+          let nx = g.origX + dx;
+          let ny = g.origY + dy;
+          if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
           return { ...n, x: nx, y: ny };
         }),
         texts: (b.texts || []).map((t) => {
           const g = d.groupTexts.find((x) => x.id === t.id);
           if (!g) return t;
-          let nx = Math.max(0, g.origX + dx);
-          let ny = Math.max(0, g.origY + dy);
-          if (gridRef.current) { nx = Math.max(0, snap(nx)); ny = Math.max(0, snap(ny)); }
+          let nx = g.origX + dx;
+          let ny = g.origY + dy;
+          if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
           return { ...t, x: nx, y: ny };
         }),
       }));
       return;
     }
-    let nx = Math.max(0, d.origX + dx);
-    let ny = Math.max(0, d.origY + dy);
-    if (gridRef.current) { nx = Math.max(0, snap(nx)); ny = Math.max(0, snap(ny)); }
+    let nx = d.origX + dx;
+    let ny = d.origY + dy;
+    if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
     updateText(d.id, { x: nx, y: ny });
   };
 
@@ -1739,8 +1800,8 @@ export default function IdeaBoard() {
   const addNoteCenter = () => {
     const sc = scrollerRef.current;
     const zf = zoom || 1;
-    const x = ((sc?.scrollLeft || 0) + (sc?.clientWidth || 600) / 2) / zf - 95;
-    const y = ((sc?.scrollTop || 0) + 140) / zf;
+    const x = viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - 95;
+    const y = viewOrigin().y + 140 / zf;
     addNote(x + (Math.random() * 80 - 40), y + Math.random() * 100, null);
   };
 
@@ -1751,16 +1812,14 @@ export default function IdeaBoard() {
     nz = Math.min(2, Math.max(0.3, Math.round(nz * 100) / 100));
     if (nz === zf) return;
     if (sc) {
-      const cx = (sc.scrollLeft + px) / zf;
-      const cy = (sc.scrollTop + py) / zf;
-      setZoom(nz);
-      requestAnimationFrame(() => {
-        sc.scrollLeft = cx * nz - px;
-        sc.scrollTop = cy * nz - py;
-      });
-    } else {
-      setZoom(nz);
+      // 指・マウスの下のボード座標を覚えておき、描き直したあとでその場所に合わせる（見ている場所を保つ処理で使う）
+      zoomAnchor.current = {
+        wx: (sc.scrollLeft + px) / zf - originRef.current.ox,
+        wy: (sc.scrollTop + py) / zf - originRef.current.oy,
+        px, py,
+      };
     }
+    setZoom(nz);
   };
 
   const zoomBy = (factor) => {
@@ -1824,8 +1883,8 @@ export default function IdeaBoard() {
             ...b,
             notes: b.notes.map((n) => ({
               ...n,
-              x: Math.max(0, snap(n.x)),
-              y: Math.max(0, snap(n.y)),
+              x: n.parentId ? Math.max(0, snap(n.x)) : snap(n.x),
+              y: n.parentId ? Math.max(0, snap(n.y)) : snap(n.y),
               w: Math.max(GRID * 5, snap(n.w)),
               h: Math.max(GRID * 4, snap(n.h)),
               ew: Math.max(GRID * 9, snap(n.ew)),
@@ -1868,16 +1927,16 @@ export default function IdeaBoard() {
     if (list.length === 0) return;
     const sc = scrollerRef.current;
     const zf = zoom || 1;
-    let baseX = at ? at.x : ((sc?.scrollLeft || 0) + (sc?.clientWidth || 600) / 2) / zf - 120;
-    let baseY = at ? at.y : ((sc?.scrollTop || 0) + 160) / zf;
+    let baseX = at ? at.x : viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - 120;
+    let baseY = at ? at.y : viewOrigin().y + 160 / zf;
     for (let i = 0; i < list.length; i++) {
       try {
         const { src, w, h } = await fileToDataUrl(list[i]);
         const disp = 260; // 初期表示幅
         const ratio = h / w || 0.75;
-        let x = Math.max(0, baseX + i * 28);
-        let y = Math.max(0, baseY + i * 28);
-        if (gridRef.current) { x = Math.max(0, snap(x)); y = Math.max(0, snap(y)); }
+        let x = baseX + i * 28;
+        let y = baseY + i * 28;
+        if (gridRef.current) { x = snap(x); y = snap(y); }
         setImages((is) => [...is, { id: nextId(), x, y, w: disp, h: Math.round(disp * ratio), src }]);
       } catch (err) {
         setImgError(err.message || "画像を取り込めませんでした");
@@ -1900,9 +1959,9 @@ export default function IdeaBoard() {
     const d = imgDragRef.current;
     if (!d) return;
     const zf = zoomRef.current || 1;
-    let nx = Math.max(0, d.origX + (e.clientX - d.startX) / zf);
-    let ny = Math.max(0, d.origY + (e.clientY - d.startY) / zf);
-    if (gridRef.current) { nx = Math.max(0, snap(nx)); ny = Math.max(0, snap(ny)); }
+    let nx = d.origX + (e.clientX - d.startX) / zf;
+    let ny = d.origY + (e.clientY - d.startY) / zf;
+    if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
     updateImage(d.id, { x: nx, y: ny });
   };
   const onImgDragUp = () => { imgDragRef.current = null; };
@@ -1953,11 +2012,7 @@ export default function IdeaBoard() {
     return d;
   };
 
-  const boardPoint = (e) => {
-    const rect = contentRef.current.getBoundingClientRect();
-    const zf = zoomRef.current || 1;
-    return { x: (e.clientX - rect.left) / zf, y: (e.clientY - rect.top) / zf };
-  };
+  const boardPoint = (e) => toWorld(e.clientX, e.clientY);
 
   // 消しゴム
   // whole: 触れた線オブジェクトごと消す / part: なぞった部分だけ消して線を分割する
@@ -2077,10 +2132,7 @@ export default function IdeaBoard() {
     } else if (!selectMode && !zoneMode) {
       return;
     }
-    const rect = contentRef.current.getBoundingClientRect();
-    const zf = zoomRef.current || 1;
-    const x = (e.clientX - rect.left) / zf;
-    const y = (e.clientY - rect.top) / zf;
+    const { x, y } = toWorld(e.clientX, e.clientY);
     selBoxRef.current = { x1: x, y1: y, x2: x, y2: y, moved: false, mode: zoneMode ? "zone" : "select" };
     setSelBox({ x1: x, y1: y, x2: x, y2: y });
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -2091,10 +2143,7 @@ export default function IdeaBoard() {
     if (drawRef.current) { onDrawPointerMove(e); return; }
     const s = selBoxRef.current;
     if (!s) return;
-    const rect = contentRef.current.getBoundingClientRect();
-    const zf = zoomRef.current || 1;
-    const x = (e.clientX - rect.left) / zf;
-    const y = (e.clientY - rect.top) / zf;
+    const { x, y } = toWorld(e.clientX, e.clientY);
     if (Math.abs(x - s.x1) + Math.abs(y - s.y1) > 4) s.moved = true;
     s.x2 = x;
     s.y2 = y;
@@ -2114,7 +2163,7 @@ export default function IdeaBoard() {
       if (s.moved && w > 40 && h > 30) {
         let x = Math.min(s.x1, s.x2), y = Math.min(s.y1, s.y2), W = w, H = h;
         if (gridRef.current) {
-          x = Math.max(0, snap(x)); y = Math.max(0, snap(y));
+          x = snap(x); y = snap(y);
           W = Math.max(GRID * 2, snap(W)); H = Math.max(GRID * 2, snap(H));
         }
         setZones((zs) => [
@@ -2177,9 +2226,9 @@ export default function IdeaBoard() {
     const d = zoneDragRef.current;
     if (!d) return;
     const zf = zoomRef.current || 1;
-    let nx = Math.max(0, d.origX + (e.clientX - d.startX) / zf);
-    let ny = Math.max(0, d.origY + (e.clientY - d.startY) / zf);
-    if (gridRef.current) { nx = Math.max(0, snap(nx)); ny = Math.max(0, snap(ny)); }
+    let nx = d.origX + (e.clientX - d.startX) / zf;
+    let ny = d.origY + (e.clientY - d.startY) / zf;
+    if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
     // 領域の移動量と同じだけ上のアイテムも動かす（相対配置を保つ）
     const ddx = nx - d.origX;
     const ddy = ny - d.origY;
@@ -2188,11 +2237,11 @@ export default function IdeaBoard() {
       zones: (b.zones || []).map((z) => (z.id === d.id ? { ...z, x: nx, y: ny } : z)),
       notes: b.notes.map((n) => {
         const g = d.gNotes.find((x) => x.id === n.id);
-        return g ? { ...n, x: Math.max(0, g.origX + ddx), y: Math.max(0, g.origY + ddy) } : n;
+        return g ? { ...n, x: g.origX + ddx, y: g.origY + ddy } : n;
       }),
       texts: (b.texts || []).map((t) => {
         const g = d.gTexts.find((x) => x.id === t.id);
-        return g ? { ...t, x: Math.max(0, g.origX + ddx), y: Math.max(0, g.origY + ddy) } : t;
+        return g ? { ...t, x: g.origX + ddx, y: g.origY + ddy } : t;
       }),
     }));
   };
@@ -2271,8 +2320,9 @@ export default function IdeaBoard() {
     zRef.current += 1;
     setNotes((ns) => ns.map((m) => (m.id === note.id ? { ...m, z: zRef.current } : m)));
     const el = noteEls.current[note.id];
-    let maxX = CANVAS_W - (note.expanded ? note.ew : note.w);
-    let maxY = CANVAS_H - 60;
+    // 最上位の付箋は端なし（端のないボード）。中の付箋は親の中に収める
+    let minX = -Infinity, minY = -Infinity, maxX = Infinity, maxY = Infinity;
+    if (depth > 0) { minX = 0; minY = 0; }
     if (depth > 0 && el?.parentElement) {
       const p = el.parentElement;
       maxX = Math.max(0, p.clientWidth - el.offsetWidth - 4);
@@ -2282,7 +2332,8 @@ export default function IdeaBoard() {
       id: note.id,
       startX: e.clientX, startY: e.clientY,
       origX: note.x, origY: note.y,
-      maxX, maxY, moved: false,
+      minX, minY, maxX, maxY, moved: false,
+      startWorld: toWorld(e.clientX, e.clientY), // 画面の端で自動スクロールしても付箋がついてくるよう、ボード座標で測る
       // 選択中の付箋をつかんだら、選択全体（文字も含む）をまとめて動かす
       group: inSelection
         ? selectedIds.map((id) => { const m = noteMap[id]; return m ? { id, origX: m.x, origY: m.y } : null; }).filter(Boolean)
@@ -2294,12 +2345,39 @@ export default function IdeaBoard() {
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
+  // ドラッグ中に画面の端へ寄せると、その方向へ自動でスクロールする（端のないボード）。
+  // ポインタが止まっていても、スクロールでその下のボード座標が変わるので、付箋もついてくる
+  const autoRef = useRef({ raf: 0, vx: 0, vy: 0 });
+  const autoScrollFor = (cx, cy) => {
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    const r = sc.getBoundingClientRect();
+    const EDGE = 48, MAX = 22;  // 端から48pxに入ったら、近いほど速く（1コマ最大22px）
+    const sp = (dist) => (dist < EDGE ? Math.ceil(((EDGE - Math.max(0, dist)) / EDGE) * MAX) : 0);
+    const a = autoRef.current;
+    a.vx = sp(cx - r.left) ? -sp(cx - r.left) : sp(r.right - cx);
+    a.vy = sp(cy - r.top) ? -sp(cy - r.top) : sp(r.bottom - cy);
+    if ((a.vx || a.vy) && !a.raf) {
+      const step = () => {
+        const d = dragRef.current;
+        if (!d || (!a.vx && !a.vy)) { a.raf = 0; return; }
+        sc.scrollLeft += a.vx;
+        sc.scrollTop += a.vy;
+        if (d.lastClient) onNotePointerMove(d.lastClient);
+        a.raf = requestAnimationFrame(step);
+      };
+      a.raf = requestAnimationFrame(step);
+    }
+  };
+
   const onNotePointerMove = (e) => {
     const d = dragRef.current;
     if (!d) return;
-    const zf = zoomRef.current || 1;
-    const dx = (e.clientX - d.startX) / zf;
-    const dy = (e.clientY - d.startY) / zf;
+    const w = toWorld(e.clientX, e.clientY);
+    const dx = w.x - d.startWorld.x;
+    const dy = w.y - d.startWorld.y;
+    d.lastClient = { clientX: e.clientX, clientY: e.clientY };
+    autoScrollFor(e.clientX, e.clientY);
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
     if (d.group) {
       // 選択グループ全体（付箋＋文字）を移動
@@ -2308,30 +2386,27 @@ export default function IdeaBoard() {
         notes: b.notes.map((n) => {
           const g = d.group.find((x) => x.id === n.id);
           if (!g) return n;
-          let nx = Math.min(CANVAS_W - 80, Math.max(0, g.origX + dx));
-          let ny = Math.min(CANVAS_H - 60, Math.max(0, g.origY + dy));
-          if (gridRef.current) {
-            nx = Math.max(0, snap(nx));
-            ny = Math.max(0, snap(ny));
-          }
+          let nx = g.origX + dx;
+          let ny = g.origY + dy;
+          if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
           return { ...n, x: nx, y: ny };
         }),
         texts: (b.texts || []).map((t) => {
           const g = (d.groupTexts || []).find((x) => x.id === t.id);
           if (!g) return t;
-          let nx = Math.max(0, g.origX + dx);
-          let ny = Math.max(0, g.origY + dy);
-          if (gridRef.current) { nx = Math.max(0, snap(nx)); ny = Math.max(0, snap(ny)); }
+          let nx = g.origX + dx;
+          let ny = g.origY + dy;
+          if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
           return { ...t, x: nx, y: ny };
         }),
       }));
       return;
     }
-    let nx = Math.min(d.maxX, Math.max(0, d.origX + dx));
-    let ny = Math.min(d.maxY, Math.max(0, d.origY + dy));
+    let nx = Math.min(d.maxX, Math.max(d.minX, d.origX + dx));
+    let ny = Math.min(d.maxY, Math.max(d.minY, d.origY + dy));
     if (gridRef.current) {
-      nx = Math.min(d.maxX, Math.max(0, snap(nx)));
-      ny = Math.min(d.maxY, Math.max(0, snap(ny)));
+      nx = Math.min(d.maxX, Math.max(d.minX, snap(nx)));
+      ny = Math.min(d.maxY, Math.max(d.minY, snap(ny)));
     }
     setNotes((ns) => ns.map((n) => (n.id === d.id ? { ...n, x: nx, y: ny } : n)));
   };
@@ -4795,9 +4870,9 @@ export default function IdeaBoard() {
         );
       })()}
 
-      {/* ボード（広いキャンバスをスクロール＆ズームして使う） */}
+      {/* ボード（端のないボード。置いてある物に合わせて広がり、スクロール＆ズームして使う） */}
       <div ref={scrollerRef} style={{ flex: 1, overflow: "auto", position: "relative" }}>
-        <div style={{ width: CANVAS_W * zoom, height: CANVAS_H * zoom }}>
+        <div style={{ width: spanW * zoom, height: spanH * zoom }}>
         <div
           ref={contentRef}
           onPointerDown={onBoardPointerDown}
@@ -4807,28 +4882,29 @@ export default function IdeaBoard() {
           onDrop={(e) => {
             if (!e.dataTransfer?.files?.length) return;
             e.preventDefault();
-            const rect = contentRef.current.getBoundingClientRect();
-            const zf = zoom || 1;
-            addImageFiles(e.dataTransfer.files, { x: (e.clientX - rect.left) / zf - 120, y: (e.clientY - rect.top) / zf - 80 });
+            const p = toWorld(e.clientX, e.clientY);
+            addImageFiles(e.dataTransfer.files, { x: p.x - 120, y: p.y - 80 });
           }}
           onDoubleClick={(e) => {
             if (e.target !== contentRef.current) return;
-            const rect = contentRef.current.getBoundingClientRect();
-            const zf = zoom || 1;
-            addNote((e.clientX - rect.left) / zf - 95, (e.clientY - rect.top) / zf - 40, null);
+            const p = toWorld(e.clientX, e.clientY);
+            addNote(p.x - 95, p.y - 40, null);
           }}
           style={{
             position: "relative",
-            width: CANVAS_W, height: CANVAS_H,
+            width: spanW, height: spanH,
             transform: `scale(${zoom})`,
             transformOrigin: "0 0",
             backgroundImage: gridMode
               ? `linear-gradient(#E2DBCB 1px, transparent 1px), linear-gradient(90deg, #E2DBCB 1px, transparent 1px)`
               : "radial-gradient(#D9D2C2 1.2px, transparent 1.2px)",
             backgroundSize: `${GRID}px ${GRID}px`,
+            backgroundPosition: `${ox}px ${oy}px`,   // 方眼をボード座標の 0 にそろえる
             cursor: connectFrom ? "crosshair" : "default",
           }}
         >
+          {/* 座標の原点 (0,0)。ボード上の物はすべてこの中に、自分の座標で置く */}
+          <div ref={worldRef} data-origin style={{ position: "absolute", left: ox, top: oy, width: 0, height: 0 }}>
           {/* 領域（背景色オブジェクト・付箋の下に敷かれる） */}
           {zones.map((zn) => (
             <div
@@ -4977,7 +5053,7 @@ export default function IdeaBoard() {
             </div>
           ))}
 
-          <svg width={CANVAS_W} height={CANVAS_H} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 99998, overflow: "visible" }}>
+          <svg width={BASE_W} height={BASE_H} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", zIndex: 99998, overflow: "visible" }}>
             {renderEdges()}
           </svg>
 
@@ -5003,9 +5079,9 @@ export default function IdeaBoard() {
           {/* 手書きレイヤー */}
           {showStrokes && (
             <svg
-              width={CANVAS_W}
-              height={CANVAS_H}
-              style={{ position: "absolute", inset: 0, zIndex: 110000, pointerEvents: "none" }}
+              width={BASE_W}
+              height={BASE_H}
+              style={{ position: "absolute", left: 0, top: 0, zIndex: 110000, pointerEvents: "none", overflow: "visible" }}
             >
               {strokes.map((st) => (
                 <path
@@ -5039,8 +5115,9 @@ export default function IdeaBoard() {
               onPointerMove={onBoardPointerMove}
               onPointerUp={onBoardPointerUp}
               style={{
-                position: "absolute", inset: 0,
-                width: CANVAS_W, height: CANVAS_H,
+                // ボード全体（原点より左・上も）を覆う
+                position: "absolute", left: bounds.minX, top: bounds.minY,
+                width: spanW, height: spanH,
                 zIndex: 115000,
                 touchAction: penFingerDraw ? "none" : "pan-x pan-y",
                 cursor: eraseMode ? "cell" : "crosshair",
@@ -5167,8 +5244,10 @@ export default function IdeaBoard() {
             );
           })}
 
+          </div>
+
           {loaded && notes.length === 0 && (
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "60vh", display: "grid", placeItems: "center", pointerEvents: "none" }}>
+            <div style={{ position: "absolute", top: oy, left: ox, width: BASE_W, height: "60vh", display: "grid", placeItems: "center", pointerEvents: "none" }}>
               <p style={{ color: "#9C9587", fontSize: 15 }}>
                 ダブルクリック、または「＋ 付箋を貼る」で最初の付箋を貼りましょう
               </p>
@@ -5982,8 +6061,6 @@ export default function IdeaBoard() {
                   { key: "grid", label: "グリッド間隔 (px)", min: 8, max: 100 },
                   { key: "noteTagLimit", label: "付箋に表示するタグ数", min: 1, max: 10 },
                   { key: "overviewZoom", label: "見出し表示に切替わる倍率 (%)", min: 20, max: 100, pct: true },
-                  { key: "canvasW", label: "キャンバス幅 (px)", min: 1000, max: 20000 },
-                  { key: "canvasH", label: "キャンバス高さ (px)", min: 1000, max: 20000 },
                 ].map((f) => (
                   <label key={f.key} style={{ fontSize: 12 }}>
                     {f.label}
