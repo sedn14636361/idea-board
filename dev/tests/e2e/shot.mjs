@@ -20,11 +20,11 @@ export async function desktop({ width = 1280, height = 800 } = {}) {
   return { browser, ctx, page, close: () => browser.close() };
 }
 
-// 赤枠と見出しで示す。見出しは枠の上（画面の上端に近ければ下）に出す
-export async function mark(page, locator, label) {
+// 赤枠と見出しで示す。見出しは枠の上（画面の上端に近ければ下）に出す。左にはみ出すときは左端にそろえる
+export async function mark(page, locator, label, { at } = {}) {
   const b = await locator.first().boundingBox();
   if (!b) throw new Error(`示す場所が見つかりません: ${label}`);
-  await page.evaluate(({ b, label }) => {
+  await page.evaluate(({ b, label, at }) => {
     const d = document.createElement("div");
     d.className = "__mark";
     Object.assign(d.style, {
@@ -39,9 +39,13 @@ export async function mark(page, locator, label) {
       background: "#E0245E", color: "#fff", font: "bold 12px sans-serif", padding: "2px 7px",
       borderRadius: below ? "0 0 6px 6px" : "6px 6px 0 0",
     });
+    // at: "left" なら枠の左に出す（上に別の印があるとき）
+    if (at === "left") Object.assign(t.style, { right: "100%", bottom: "auto", top: "50%", transform: "translateY(-50%)", borderRadius: "6px 0 0 6px" });
     d.appendChild(t);
     document.body.appendChild(d);
-  }, { b, label });
+    // 見出しが画面の左にはみ出すなら、枠の左端にそろえる
+    if (at !== "left" && t.getBoundingClientRect().left < 0) Object.assign(t.style, { right: "auto", left: Math.max(-3, 4 - b.x) + "px" });
+  }, { b, label, at });
 }
 
 export const unmark = (page) => page.evaluate(() => document.querySelectorAll(".__mark").forEach((e) => e.remove()));

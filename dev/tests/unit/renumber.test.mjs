@@ -1,15 +1,5 @@
-// renumber() の検証。IdeaBoard.jsx から関数本体を取り出して単体で動かす。
-import fs from "fs";
-
-const src = fs.readFileSync(new URL("../../src/IdeaBoard.jsx", import.meta.url), "utf8");
-const start = src.indexOf("function renumber(notes) {");
-if (start < 0) throw new Error("renumber が見つかりません");
-let d = 0, end = -1;
-for (let i = src.indexOf("{", start); i < src.length; i++) {
-  if (src[i] === "{") d++;
-  else if (src[i] === "}") { d--; if (d === 0) { end = i + 1; break; } }
-}
-const renumber = eval(`(${src.slice(start, end)})`);
+// renumber() の検証（src/notes.js）
+import { renumber } from "../../src/notes.js";
 
 let ng = 0;
 const eq = (label, got, want) => {
