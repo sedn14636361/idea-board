@@ -1,4 +1,4 @@
-// 初期画面のメッセージ（6.6.0）: 付箋・文字・領域・画像・手書きのどれか一つでもあれば出さない
+// 初期画面のメッセージ（6.6.0）: 付箋・文字・領域・画像・手書きのどれか一つでもあれば出さない。出すときはボードの左上
 import { chromium } from "playwright";
 const BASE = process.env.BASE;
 let ng = 0;
@@ -34,6 +34,15 @@ for (const [label, items, want] of cases) {
   await pg.reload(); await pg.waitForTimeout(1200);
   eq(`${label} → メッセージを${want ? "出す" : "出さない"}`, await pg.getByText(HINT).count() > 0, want);
 }
+
+// 何も無いボードでは、ボードの左上に出る（幅 1280 の画面でも見える）
+const pos = await pg.evaluate((HINT) => {
+  const p = [...document.querySelectorAll("p")].find((e) => e.textContent.includes(HINT));
+  const sc = document.querySelector("[data-origin]").closest("[style*='overflow: auto']");
+  const r = p.getBoundingClientRect(), s = sc.getBoundingClientRect();
+  return { dx: Math.round(r.left - s.left), dy: Math.round(r.top - s.top), inside: r.right <= s.right && r.bottom <= s.bottom };
+}, HINT);
+eq("ボードの左上に出る（左上から 60px 以内・画面に収まる）", [pos.dx >= 0 && pos.dx <= 60, pos.dy >= 0 && pos.dy <= 60, pos.inside], [true, true, true]);
 
 // 何も無いボードに「＋ 追加」→「文字」で見出しを置くと消える
 await pg.getByRole("button", { name: /追加/ }).first().click();
