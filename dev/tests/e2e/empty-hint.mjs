@@ -1,4 +1,4 @@
-// 初期画面のメッセージ（6.6.0）: 付箋・文字・領域・画像・手書きのどれか一つでもあれば出さない。出すときはボードの左上の角から右へ 504px・下へ 500px
+// 初期画面のメッセージ（6.6.0）: 付箋・文字・領域・画像・手書きのどれか一つでもあれば出さない。出すときはボードの左上の角から右へ 254px・下へ 250px
 import { chromium } from "playwright";
 const BASE = process.env.BASE;
 let ng = 0;
@@ -35,14 +35,14 @@ for (const [label, items, want] of cases) {
   eq(`${label} → メッセージを${want ? "出す" : "出さない"}`, await pg.getByText(HINT).count() > 0, want);
 }
 
-// 何も無いボードでは、ボードの左上の角から右へ 504px・下へ 500px に出る（幅 1280 の画面でも見える）
+// 何も無いボードでは、ボードの左上の角から右へ 254px・下へ 250px に出る（幅 1280 の画面でも見える）
 const pos = await pg.evaluate((HINT) => {
   const p = [...document.querySelectorAll("p")].find((e) => e.textContent.includes(HINT));
   const sc = document.querySelector("[data-origin]").closest("[style*='overflow: auto']");
   const r = p.getBoundingClientRect(), s = sc.getBoundingClientRect();
   return { dx: Math.round(r.left - s.left), dy: Math.round(r.top - s.top), inside: r.right <= s.right && r.bottom <= s.bottom };
 }, HINT);
-eq("ボードの左上の角から右へ 504px・下へ 500px に出る（画面に収まる）", [Math.abs(pos.dx - 504) <= 2, Math.abs(pos.dy - 500) <= 2, pos.inside], [true, true, true]);
+eq("ボードの左上の角から右へ 254px・下へ 250px に出る（画面に収まる）", [Math.abs(pos.dx - 254) <= 2, Math.abs(pos.dy - 250) <= 2, pos.inside], [true, true, true]);
 
 // 何も無いボードに「＋ 追加」→「文字」で見出しを置くと消える
 await pg.getByRole("button", { name: /追加/ }).first().click();

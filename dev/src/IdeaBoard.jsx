@@ -5248,7 +5248,7 @@ export default function IdeaBoard() {
 
           {/* 付箋・文字・領域・画像・手書きが一つでもあれば出さない */}
           {loaded && notes.length + texts.length + zones.length + images.length + strokes.length === 0 && (
-            <div style={{ position: "absolute", top: oy + 500, left: ox + 504, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", top: oy + 250, left: ox + 254, pointerEvents: "none" }}>
               <p style={{ color: "#9C9587", fontSize: 15, margin: 0, whiteSpace: "nowrap" }}>
                 ダブルクリック、または「＋ 付箋を貼る」で最初の付箋を貼りましょう
               </p>
