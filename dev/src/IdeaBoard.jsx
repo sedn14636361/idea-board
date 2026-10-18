@@ -830,6 +830,10 @@ export default function IdeaBoard() {
   const syncBusy = useRef(false);
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
+  // 突き合わせ（reconcile）は起動直後など古い描画から呼ばれることがあるので、プロジェクトの一覧も最新を参照する
+  const metasRef = useRef(projectMetas);
+  metasRef.current = projectMetas;
+  const reconcileAgain = useRef(false); // 突き合わせ中に呼ばれた → 終わったらもう一度（全件）
   const optOutRef = useRef(cloudOptOut);
   optOutRef.current = cloudOptOut;
   const curPidRef = useRef(currentProjectId);
@@ -967,7 +971,8 @@ export default function IdeaBoard() {
   // そうでなければ、開いているプロジェクトの目次だけ確かめる（定期の確認）。
   // 一覧は全ページ読むので文書の数だけ読み取りが増え、定期に回すと Firestore の無料枠を使い切る。
   const reconcile = async (full = true) => {
-    if (!cloud || !syncLoaded.current || syncBusy.current) return;
+    if (!cloud || !syncLoaded.current) return;
+    if (syncBusy.current) { if (full) reconcileAgain.current = true; return; }
     syncBusy.current = true;
     try {
       let list = [];
@@ -1018,7 +1023,7 @@ export default function IdeaBoard() {
       }
 
       // まだ開いていない手元のプロジェクトも、サーバーに無ければ送っておく（全件の一覧を取ったときだけ）
-      for (const m of full ? projectMetas : []) {
+      for (const m of full ? metasRef.current : []) {
         if (!syncedOn(m.id) || onServer.has(m.id) || projectsRef.current.some((p) => p.id === m.id)) continue;
         try {
           if (await projectHead(cloud, m.id)) continue;  // サーバーにある。開いたときに突き合わせる
@@ -1032,6 +1037,7 @@ export default function IdeaBoard() {
     } finally {
       syncBusy.current = false;
     }
+    if (reconcileAgain.current) { reconcileAgain.current = false; reconcile(true); }
   };
 
   // 編集が落ち着いたら、変わったプロジェクトをサーバーへ送る。
