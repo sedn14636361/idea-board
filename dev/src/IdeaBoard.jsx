@@ -5,6 +5,7 @@ import {
   cloudDiagnose, makeRoomKey, FIRESTORE_RULES, tagsPush, tagsPull,
 } from "./cloud.js";
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
+import { renumber, transferNotes } from "./notes.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -111,32 +112,7 @@ const makeProject = (name) => {
   return { id: nextId(), name, boards: [b], currentBoardId: b.id };
 };
 
-// 通し番号を「今ある付箋だけ・空きなし」に詰め直す。
-// 並び順は今の番号のままなので、消した付箋より後ろだけが繰り上がる。
-// 本文の #番号 も同じ対応表で一度に置換し、同じ付箋を指し続けるようにする
-// （置換は1パスなので #7→#5 と #5→#4 が連鎖することはない）。
-function renumber(notes) {
-  const order = [...notes].sort((a, b) => (a.num || 0) - (b.num || 0));
-  const newNumOf = new Map();   // id → 新しい番号
-  const remap = new Map();      // 旧番号 → 新番号
-  let changed = false;
-  order.forEach((n, i) => {
-    const nn = i + 1;
-    newNumOf.set(n.id, nn);
-    if (n.num) remap.set(n.num, nn);
-    if (n.num !== nn) changed = true;
-  });
-  if (!changed) return { notes, nextNum: notes.length + 1 };
-  const fixText = (t) =>
-    typeof t === "string" && t.includes("#")
-      // 該当する付箋が無い番号（#999 など）はただの文字なので触らない
-      ? t.replace(/#(\d+)/g, (m, d) => { const to = remap.get(parseInt(d, 10)); return to ? `#${to}` : m; })
-      : t;
-  return {
-    notes: notes.map((n) => ({ ...n, num: newNumOf.get(n.id), text: fixText(n.text) })),
-    nextNum: notes.length + 1,
-  };
-}
+// 通し番号の詰め直し（renumber）と、ボード・プロジェクトをまたぐ移動（transferNotes）は src/notes.js
 
 // 読み込み時の整備: 通し番号の付与と、深すぎる入れ子の展開解除
 function normalizeBoard(b) {
@@ -2558,16 +2534,81 @@ export default function IdeaBoard() {
     setPendingJump(null);
   }, [pendingJump, currentId, notes]);
 
-  // 別プロジェクトへコピーする（コピー先の開いているボードに貼る）
-  const copyToProject = (noteId, targetProjectId, keepSrc = false) => {
-    setProjects((ps) => {
-      const target = ps.find((p) => p.id === targetProjectId);
-      if (!target) return ps;
-      const tb = target.boards.find((b) => b.id === target.currentBoardId) || target.boards[0];
-      if (tb) setTimeout(() => copySubtreeTo(noteId, targetProjectId, tb.id, keepSrc), 0);
-      return ps;
-    });
+  // ---- 別のボード・別のプロジェクトへ移す／複製する ----
+  // notes.js の transferNotes で、移す先と移す元を1回の更新で書き換える
+  // （6.5.0 までは「複製してから少し後に元を消す」を別々の更新で行っていた）
+  const [destList, setDestList] = useState(null); // 移す先の候補 [{ pid, name, boards: [{ id, title }] }]
+  const loadDestList = async () => {
+    const out = [];
+    for (const m of allMetas) {
+      let bs = projects.find((p) => p.id === m.id)?.boards;
+      if (!bs) {
+        // まだ開いていないプロジェクトは、ボードの名前を知るためだけに読む（開きはしない）
+        try { const raw = await storeGet(projKey(m.id)); bs = raw ? JSON.parse(raw).boards || [] : []; } catch (e) { bs = []; }
+      }
+      out.push({ pid: m.id, name: m.name, boards: bs.map((b) => ({ id: b.id, title: b.title })) });
+    }
+    out.sort((x, y) => (x.pid === currentProjectId ? -1 : y.pid === currentProjectId ? 1 : 0));
+    setDestList(out);
   };
+  const transferTo = async ({ toPid, toBid, move, noteIds = [], textIds = [] }) => {
+    if (toPid !== currentProjectId && !(await ensureProject(toPid))) return false;
+    const from = { pid: currentProjectId, bid: currentId };
+    setProjects((ps) => transferNotes(ps, {
+      from, to: { pid: toPid, bid: toBid }, noteIds, textIds, move, newId: nextId, newZ: () => ++zRef.current,
+    }).projects);
+    setCopyMenuFor(null);
+    if (move) {
+      setSelectedIds([]); setSelectedTextIds([]); setListPicked([]);
+      setConnectFrom(null); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null);
+    }
+    return true;
+  };
+
+  // 移す先の一覧（プロジェクトごとにボードを並べる）。actions: [{ label, move, primary }] … ボードの行に並ぶボタン
+  const destRows = (actions, pick) => (
+    !destList ? (
+      <div style={{ fontSize: 11, color: "#9C9587", padding: "4px" }}>読み込み中…</div>
+    ) : destList.map((g) => (
+      <div key={g.pid} style={{ marginBottom: 4 }}>
+        <div style={{ fontSize: 10, color: "#9C9587", margin: "4px 0 2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          📁 {g.name || "（無題）"}{g.pid === currentProjectId ? "（このプロジェクト）" : ""}
+        </div>
+        {g.boards.map((b) => {
+          const here = g.pid === currentProjectId && b.id === currentId;
+          return (
+            <div key={b.id} data-dest={`${g.name}/${b.title}`} style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: 1, paddingLeft: 8 }}>
+              <span style={{ flex: 1, fontSize: 12, padding: "3px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: here ? "#9C9587" : "#3E3A33" }}>
+                📄 {b.title || "（無題）"}{here ? "（今のボード）" : ""}
+              </span>
+              {!here && actions.map((a) => (
+                <button
+                  key={a.label}
+                  onClick={() => pick({ toPid: g.pid, toBid: b.id, move: a.move })}
+                  style={a.primary
+                    ? { border: "none", background: "#3E3A33", color: "#F6F2E9", borderRadius: 4, fontSize: 10, padding: "3px 7px", cursor: "pointer" }
+                    : { border: "1px solid #C9C2B2", background: "transparent", color: "#3E3A33", borderRadius: 4, fontSize: 10, padding: "2px 7px", cursor: "pointer" }}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    ))
+  );
+  const [selMoveOpen, setSelMoveOpen] = useState(false); // 範囲選択の「移動」の行き先
+
+  // 選択が無くなったら、範囲選択の「移動」の行き先も閉じる
+  useEffect(() => {
+    if (selectedIds.length + selectedTextIds.length === 0) setSelMoveOpen(false);
+  }, [selectedIds, selectedTextIds]);
+
+  // 移す先を選ぶ画面が開いたら、候補を読み直す
+  useEffect(() => {
+    if (copyMenuFor || listActionOpen || selMoveOpen) loadDestList();
+  }, [copyMenuFor, listActionOpen, selMoveOpen, currentProjectId]);
 
   // ---- テキストで書き出す ----
   const [exportOpen, setExportOpen] = useState(false);
@@ -2636,26 +2677,6 @@ export default function IdeaBoard() {
   };
 
   // ---- 一覧からの一括操作（今のボードの付箋が対象） ----
-  const listCopyTo = (boardId) => {
-    listPicked.forEach((id) => copySubtreeTo(id, currentProjectId, boardId));
-    setListPicked([]);
-    setListActionOpen(null);
-  };
-
-  const listMoveTo = (boardId) => {
-    listPicked.forEach((id) => copySubtreeTo(id, currentProjectId, boardId, true));
-    const doomed = new Set();
-    listPicked.forEach((id) => {
-      doomed.add(id);
-      collectDescendants(id, byParent).forEach((d) => doomed.add(d));
-    });
-    setTimeout(() => {
-      removeNoteIds(doomed);
-    }, 0);
-    setListPicked([]);
-    setListActionOpen(null);
-  };
-
   const listDelete = () => {
     const count = listPicked.length;
     askThen(
@@ -2671,17 +2692,6 @@ export default function IdeaBoard() {
         setListPicked([]);
       }
     );
-  };
-
-  // 別のボード／プロジェクトへ移動する（複製してから元を消す）
-  const moveSubtreeTo = (noteId, targetProjectId, targetBoardId) => {
-    copySubtreeTo(noteId, targetProjectId, targetBoardId, true);
-    setTimeout(() => removeNote(noteId), 0);
-  };
-
-  const moveToProject = (noteId, targetProjectId) => {
-    copyToProject(noteId, targetProjectId, true);
-    setTimeout(() => removeNote(noteId), 0);
   };
 
   // ---- タグ ----
@@ -2958,63 +2968,10 @@ export default function IdeaBoard() {
               >
                 📄 テキストをコピー
               </button>
-              {boards.filter((b) => b.id !== currentId).length > 0 && (
-                <>
-                  <div style={{ fontSize: 10, color: "#9C9587", marginBottom: 2 }}>別のボードへ</div>
-                  {boards.filter((b) => b.id !== currentId).map((b) => (
-                    <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: 1 }}>
-                      <span style={{ flex: 1, fontSize: 12, padding: "3px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        📄 {b.title || "（無題）"}
-                      </span>
-                      <button
-                        onClick={() => copySubtreeTo(n.id, currentProjectId, b.id)}
-                        style={{ border: "1px solid #C9C2B2", background: "transparent", color: "#3E3A33", borderRadius: 4, fontSize: 10, padding: "2px 7px", cursor: "pointer" }}
-                      >
-                        複製
-                      </button>
-                      <button
-                        onClick={() => moveSubtreeTo(n.id, currentProjectId, b.id)}
-                        style={{ border: "none", background: "#3E3A33", color: "#F6F2E9", borderRadius: 4, fontSize: 10, padding: "3px 7px", cursor: "pointer" }}
-                      >
-                        移動
-                      </button>
-                    </div>
-                  ))}
-                </>
-              )}
-              {allMetas.filter((m) => m.id !== currentProjectId).length > 0 && (
-                <>
-                  <div style={{ fontSize: 10, color: "#9C9587", margin: "4px 0 2px" }}>他のプロジェクトへ</div>
-                  {allMetas.filter((m) => m.id !== currentProjectId).map((p) => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: 1 }}>
-                      <span style={{ flex: 1, fontSize: 12, padding: "3px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        📁 {p.name || "（無題）"}
-                      </span>
-                      <button
-                        onClick={async () => {
-                          const ok = await ensureProject(p.id);
-                          if (!ok) return;
-                          setCopyMenuFor(null);
-                          setTimeout(() => copyToProject(n.id, p.id), 0);
-                        }}
-                        style={{ border: "1px solid #C9C2B2", background: "transparent", color: "#3E3A33", borderRadius: 4, fontSize: 10, padding: "2px 7px", cursor: "pointer" }}
-                      >
-                        複製
-                      </button>
-                      <button
-                        onClick={async () => {
-                          const ok = await ensureProject(p.id);
-                          if (!ok) return;
-                          setCopyMenuFor(null);
-                          setTimeout(() => moveToProject(n.id, p.id), 0);
-                        }}
-                        style={{ border: "none", background: "#3E3A33", color: "#F6F2E9", borderRadius: 4, fontSize: 10, padding: "3px 7px", cursor: "pointer" }}
-                      >
-                        移動
-                      </button>
-                    </div>
-                  ))}
-                </>
+              <div style={{ fontSize: 10, color: "#9C9587", margin: "2px 0 0" }}>別のボード・プロジェクトへ</div>
+              {destRows(
+                [{ label: "複製", move: false }, { label: "移動", move: true, primary: true }],
+                (d) => transferTo({ ...d, noteIds: [n.id] })
               )}
             </div>
           )}
@@ -4707,24 +4664,19 @@ export default function IdeaBoard() {
                     <div style={{ fontSize: 10.5, color: "#6B665C", marginBottom: 4 }}>
                       {listActionOpen === "copy" ? "複製先" : "移動先"}のボードを選んでください
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 130, overflowY: "auto" }}>
-                      {boards.map((b) => (
-                        <button
-                          key={b.id}
-                          onClick={() => (listActionOpen === "copy" ? listCopyTo(b.id) : listMoveTo(b.id))}
-                          disabled={listActionOpen === "move" && b.id === currentId}
-                          style={{
-                            textAlign: "left", border: "1px solid #C9C2B2", borderRadius: 5,
-                            background: listActionOpen === "move" && b.id === currentId ? "rgba(62,58,51,.06)" : "#fff",
-                            color: listActionOpen === "move" && b.id === currentId ? "#9C9587" : "#3E3A33",
-                            fontSize: 11, padding: "5px 8px",
-                            cursor: listActionOpen === "move" && b.id === currentId ? "default" : "pointer",
-                          }}
-                        >
-                          📄 {b.title || "（無題）"}
-                          {b.id === currentId && "（今のボード）"}
-                        </button>
-                      ))}
+                    {listActionOpen === "copy" && (
+                      <button
+                        onClick={() => { listPicked.forEach((id) => copySubtreeTo(id, currentProjectId, currentId)); setListPicked([]); setListActionOpen(null); }}
+                        style={{ width: "100%", textAlign: "left", border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 8px", cursor: "pointer", marginBottom: 3 }}
+                      >
+                        ⧉ 今のボードに複製
+                      </button>
+                    )}
+                    <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                      {destRows(
+                        [listActionOpen === "copy" ? { label: "複製", move: false } : { label: "移動", move: true, primary: true }],
+                        async (d) => { await transferTo({ ...d, noteIds: listPicked }); setListPicked([]); setListActionOpen(null); }
+                      )}
                     </div>
                     <button
                       onClick={() => setListActionOpen(null)}
@@ -5349,6 +5301,12 @@ export default function IdeaBoard() {
             ⧉ 複製
           </button>
           <button
+            onClick={() => setSelMoveOpen((v) => !v)}
+            style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+          >
+            ↗ 移動
+          </button>
+          <button
             onClick={() => setExportOpen(true)}
             style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
           >
@@ -5361,11 +5319,35 @@ export default function IdeaBoard() {
             ✕ 剥がす
           </button>
           <button
-            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); }}
+            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); }}
             style={{ border: "1px solid #8A857B", borderRadius: 6, background: "transparent", color: "#D8D3C8", fontSize: 12, padding: "3px 10px", cursor: "pointer" }}
           >
             解除
           </button>
+          {selMoveOpen && (
+            <div
+              data-nodrag
+              style={{
+                position: "absolute", left: 0, bottom: "calc(100% + 8px)", width: 280, maxHeight: 320, overflowY: "auto",
+                background: "#FFFDF6", color: "#3E3A33", border: "1px solid #D9D2C2", borderRadius: 8,
+                boxShadow: "0 5px 16px rgba(40,35,20,.3)", padding: 8,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", marginBottom: 2 }}>
+                <span style={{ flex: 1, fontSize: 11, color: "#6B665C" }}>移動先のボードを選んでください</span>
+                <button
+                  onClick={() => setSelMoveOpen(false)}
+                  style={{ border: "none", background: "transparent", color: "#8A857B", fontSize: 13, cursor: "pointer", padding: 0 }}
+                >
+                  ✕
+                </button>
+              </div>
+              {destRows(
+                [{ label: "移動", move: true, primary: true }],
+                async (d) => { await transferTo({ ...d, noteIds: selectedIds, textIds: selectedTextIds }); setSelMoveOpen(false); }
+              )}
+            </div>
+          )}
         </div>
       )}
 

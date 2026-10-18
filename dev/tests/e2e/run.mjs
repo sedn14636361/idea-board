@@ -30,6 +30,8 @@ const all = [
   ["mobile-edit", "mobile-edit.mjs", { BASE }],                      // スマホで直す → パソコンの付箋も書き換わる
   ["tags-keep", "tags-keep.mjs", { BASE }],                          // 足したタグが消えない・送っても選択が残る
   ["mobile-update", "mobile-update.mjs", { DIST: dist }],             // 新しい版の知らせと切り替え（スマホ版）
+  ["transfer", "transfer.mjs", { BASE }],                            // 付箋を別のボード・プロジェクトへ移す
+  ["transfer-cloud", "transfer-cloud.mjs", { BASE }],                // 移したあと、クラウドの両方のプロジェクトが新しい中身になる
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);
