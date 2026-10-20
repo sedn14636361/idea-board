@@ -33,13 +33,13 @@ export async function mark(page, locator, label, { at } = {}) {
     });
     const t = document.createElement("div");
     t.textContent = label;
-    const below = b.y < 28;
+    const below = at === "below" || b.y < 28;
     Object.assign(t.style, {
       position: "absolute", right: "-3px", [below ? "top" : "bottom"]: "100%", whiteSpace: "nowrap",
       background: "#E0245E", color: "#fff", font: "bold 12px sans-serif", padding: "2px 7px",
       borderRadius: below ? "0 0 6px 6px" : "6px 6px 0 0",
     });
-    // at: "left" なら枠の左に出す（上に別の印があるとき）
+    // at: "left" なら枠の左に、"below" なら枠の下に出す（上に別の印があるとき）
     if (at === "left") Object.assign(t.style, { right: "100%", bottom: "auto", top: "50%", transform: "translateY(-50%)", borderRadius: "6px 0 0 6px" });
     d.appendChild(t);
     document.body.appendChild(d);

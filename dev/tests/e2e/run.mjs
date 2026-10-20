@@ -33,6 +33,7 @@ const all = [
   ["infinite", "infinite.mjs", { BASE }],                            // 端のないボード
   ["empty-hint", "empty-hint.mjs", { BASE }],                        // 初期画面のメッセージ（物が一つでもあれば出さない）
   ["t-newproj", "t-newproj.mjs", { BASE }],                          // 同期中に新規プロジェクトを作っても消えない
+  ["bulk-color", "bulk-color.mjs", { BASE }],                        // 複数の付箋の色をまとめて変える
   ["transfer", "transfer.mjs", { BASE }],                            // 付箋を別のボード・プロジェクトへ移す
   ["t-unopened", "t-unopened.mjs", { BASE }],                        // 開いていないプロジェクトもサーバーへ上がる
   ["transfer-cloud", "transfer-cloud.mjs", { BASE }],                // 移したあと、クラウドの両方のプロジェクトが新しい中身になる
