@@ -910,8 +910,10 @@ export default function IdeaBoard() {
   const cloudShared = cloud ? allMetas.map((m) => m.id).filter((id) => !cloudOptOut.includes(id)) : [];
   const projHash = (p) => hashOf(JSON.stringify(p));
   // 新しい端末で自動的に作られる白紙のプロジェクトか。
-  // 中身が空でも、名前を付けたもの（利用者が作ったもの）は白紙と見なさない。片づけられて消えないように。
+  // 中身が空でも、名前を付けたもの・「新規プロジェクト」で作ったもの（userMade）は白紙と見なさない。片づけられて消えないように。
+  // （6.6.1 までは「新規プロジェクト」も白紙と見なされ、作った直後にサーバーの最新へ置き換えられて消えていた）
   const isBlank = (p) =>
+    !p.userMade &&
     /^プロジェクト\d*$/.test(p.name || "") &&
     (p.boards || []).length <= 1 &&
     (p.boards || []).every((b) =>
@@ -1571,7 +1573,8 @@ export default function IdeaBoard() {
   };
 
   const addProject = () => {
-    const p = makeProject(`プロジェクト${allMetas.length + 1}`);
+    // userMade: 利用者が作った印。名前が「プロジェクトN」で空でも白紙と見なさない（isBlank）
+    const p = { ...makeProject(`プロジェクト${allMetas.length + 1}`), userMade: true };
     setProjects((ps) => [...ps, p]);
     setProjectMetas((ms) => [...ms, metaOf(p)]);
     setCurrentProjectId(p.id);
