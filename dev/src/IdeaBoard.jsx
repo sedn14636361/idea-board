@@ -2682,12 +2682,75 @@ export default function IdeaBoard() {
       </div>
     ))
   );
+  // 色の並び（1枚ずつの色選び・まとめて色を変える で共通）。current: 今の色（まちまちなら null）
+  // 設定で「色を選ぶときに表示する」が切ってあれば、丸だけを横に並べる
+  const colorChoices = (current, pick) => {
+    const withMemo = settings.showColorNotes !== false;
+    return COLORS.map((col, i) => {
+      const memo = (settings.colorNotes || [])[i] || "";
+      // メモを表示しない設定のときは、丸だけを横に並べる
+      if (!withMemo) {
+        return (
+          <button
+            key={col.name}
+            title={memo ? `${col.name}：${memo}` : col.name}
+            onClick={() => pick(i)}
+            style={{
+              width: 20, height: 20, borderRadius: "50%",
+              border: current === i ? "2.5px solid #3E3A33" : "1px solid rgba(0,0,0,.2)",
+              background: col.bg, cursor: "pointer", padding: 0,
+            }}
+          />
+        );
+      }
+      return (
+        <button
+          key={col.name}
+          title={memo ? `${col.name}：${memo}` : col.name}
+          onClick={() => pick(i)}
+          style={{
+            display: "flex", alignItems: "center", gap: 7,
+            border: "none", borderRadius: 6, cursor: "pointer", padding: "3px 6px",
+            background: current === i ? "rgba(62,58,51,.1)" : "transparent",
+            width: "100%", textAlign: "left",
+          }}
+        >
+          <span
+            style={{
+              width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
+              border: current === i ? "2.5px solid #3E3A33" : "1px solid rgba(0,0,0,.2)",
+              background: col.bg,
+            }}
+          />
+          <span style={{ fontSize: 11, color: memo ? "#3E3A33" : "#9C9587", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {memo || col.name}
+          </span>
+        </button>
+      );
+    });
+  };
   const [selMoveOpen, setSelMoveOpen] = useState(false); // 範囲選択の「移動」の行き先
+  const [selColorOpen, setSelColorOpen] = useState(false); // 範囲選択の「色」
+  const [listColorOpen, setListColorOpen] = useState(false); // 付箋リストの「色」
+  // 選んだ付箋の色をまとめて変える（中の付箋は変えない）。1回の更新で書き換える
+  const setColorOf = (ids, color) => {
+    const set = new Set(ids);
+    setNotes((ns) => ns.map((n) => (set.has(n.id) ? { ...n, color } : n)));
+  };
+  // 選んだ付箋の色がそろっていればその色、まちまちなら null
+  const sameColor = (ids) => {
+    const cs = new Set(notes.filter((n) => ids.includes(n.id)).map((n) => n.color));
+    return cs.size === 1 ? [...cs][0] : null;
+  };
 
   // 選択が無くなったら、範囲選択の「移動」の行き先も閉じる
   useEffect(() => {
     if (selectedIds.length + selectedTextIds.length === 0) setSelMoveOpen(false);
+    if (selectedIds.length === 0) setSelColorOpen(false);
   }, [selectedIds, selectedTextIds]);
+  useEffect(() => {
+    if (listPicked.length === 0) setListColorOpen(false);
+  }, [listPicked]);
 
   // 移す先を選ぶ画面が開いたら、候補を読み直す
   useEffect(() => {
@@ -2942,48 +3005,7 @@ export default function IdeaBoard() {
                 minWidth: withMemo ? 150 : 0,
               }}
             >
-              {COLORS.map((col, i) => {
-                const memo = (settings.colorNotes || [])[i] || "";
-                // メモを表示しない設定のときは、丸だけを横に並べる
-                if (!withMemo) {
-                  return (
-                    <button
-                      key={col.name}
-                      title={memo ? `${col.name}：${memo}` : col.name}
-                      onClick={() => { updateNote(n.id, { color: i }); setColorMenuFor(null); }}
-                      style={{
-                        width: 20, height: 20, borderRadius: "50%",
-                        border: n.color === i ? "2.5px solid #3E3A33" : "1px solid rgba(0,0,0,.2)",
-                        background: col.bg, cursor: "pointer", padding: 0,
-                      }}
-                    />
-                  );
-                }
-                return (
-                  <button
-                    key={col.name}
-                    title={memo ? `${col.name}：${memo}` : col.name}
-                    onClick={() => { updateNote(n.id, { color: i }); setColorMenuFor(null); }}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 7,
-                      border: "none", borderRadius: 6, cursor: "pointer", padding: "3px 6px",
-                      background: n.color === i ? "rgba(62,58,51,.1)" : "transparent",
-                      width: "100%", textAlign: "left",
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
-                        border: n.color === i ? "2.5px solid #3E3A33" : "1px solid rgba(0,0,0,.2)",
-                        background: col.bg,
-                      }}
-                    />
-                    <span style={{ fontSize: 11, color: memo ? "#3E3A33" : "#9C9587", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {memo || col.name}
-                    </span>
-                  </button>
-                );
-              })}
+              {colorChoices(n.color, (i) => { updateNote(n.id, { color: i }); setColorMenuFor(null); })}
             </div>
           ); })()}
           <button
@@ -4717,18 +4739,25 @@ export default function IdeaBoard() {
                   {listPicked.length}枚を選択中
                 </div>
                 {!listActionOpen ? (
+                  <>
                   <div style={{ display: "flex", gap: 5 }}>
                     <button
-                      onClick={() => setListActionOpen("copy")}
+                      onClick={() => { setListActionOpen("copy"); setListColorOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       複製
                     </button>
                     <button
-                      onClick={() => setListActionOpen("move")}
+                      onClick={() => { setListActionOpen("move"); setListColorOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       移動
+                    </button>
+                    <button
+                      onClick={() => setListColorOpen((v) => !v)}
+                      style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: listColorOpen ? "#EDE7DA" : "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
+                    >
+                      色
                     </button>
                     <button
                       onClick={listDelete}
@@ -4743,6 +4772,19 @@ export default function IdeaBoard() {
                       解除
                     </button>
                   </div>
+                  {listColorOpen && (() => { const withMemo = settings.showColorNotes !== false; return (
+                    <div
+                      data-listcolor
+                      style={{
+                        marginTop: 6, background: "#FFFDF6", border: "1px solid #D9D2C2", borderRadius: 6,
+                        padding: withMemo ? "4px 5px" : "6px 8px",
+                        display: "flex", flexDirection: withMemo ? "column" : "row", gap: withMemo ? 1 : 7,
+                      }}
+                    >
+                      {colorChoices(sameColor(listPicked), (i) => { setColorOf(listPicked, i); setListColorOpen(false); })}
+                    </div>
+                  ); })()}
+                  </>
                 ) : (
                   <>
                     <div style={{ fontSize: 10.5, color: "#6B665C", marginBottom: 4 }}>
@@ -5390,11 +5432,37 @@ export default function IdeaBoard() {
             ⧉ 複製
           </button>
           <button
-            onClick={() => setSelMoveOpen((v) => !v)}
+            onClick={() => { setSelMoveOpen((v) => !v); setSelColorOpen(false); }}
             style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
           >
             ↗ 移動
           </button>
+          {selectedIds.length > 0 && (
+            <span style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                onClick={() => { setSelColorOpen((v) => !v); setSelMoveOpen(false); }}
+                style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+              >
+                ● 色
+              </button>
+              {selColorOpen && (() => { const withMemo = settings.showColorNotes !== false; return (
+              <div
+                data-nodrag
+                data-selcolor
+                style={{
+                  position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "calc(100% + 16px)",
+                  background: "#FFFDF6", color: "#3E3A33", border: "1px solid #D9D2C2", borderRadius: 8,
+                  boxShadow: "0 5px 16px rgba(40,35,20,.3)",
+                  padding: withMemo ? "6px 7px" : "7px 9px",
+                  display: "flex", flexDirection: withMemo ? "column" : "row",
+                  gap: withMemo ? 2 : 7, minWidth: withMemo ? 150 : 0,
+                }}
+              >
+                {colorChoices(sameColor(selectedIds), (i) => { setColorOf(selectedIds, i); setSelColorOpen(false); })}
+              </div>
+            ); })()}
+            </span>
+          )}
           <button
             onClick={() => setExportOpen(true)}
             style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
@@ -5408,7 +5476,7 @@ export default function IdeaBoard() {
             ✕ 剥がす
           </button>
           <button
-            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); }}
+            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); setSelColorOpen(false); }}
             style={{ border: "1px solid #8A857B", borderRadius: 6, background: "transparent", color: "#D8D3C8", fontSize: 12, padding: "3px 10px", cursor: "pointer" }}
           >
             解除
