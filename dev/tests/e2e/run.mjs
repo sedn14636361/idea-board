@@ -37,6 +37,9 @@ const all = [
   ["transfer", "transfer.mjs", { BASE }],                            // 付箋を別のボード・プロジェクトへ移す
   ["t-unopened", "t-unopened.mjs", { BASE }],                        // 開いていないプロジェクトもサーバーへ上がる
   ["transfer-cloud", "transfer-cloud.mjs", { BASE }],                // 移したあと、クラウドの両方のプロジェクトが新しい中身になる
+  ["undo", "undo.mjs", { BASE }],                                    // 元に戻す・やり直す
+  ["undo-sync", "undo-sync.mjs", { BASE }],                          // 他の端末の版を読み込んだら履歴を消す
+  ["side-note", "side-note.mjs", { BASE }],                          // 付箋の右に同じ色・タグの付箋を作る
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);
