@@ -7,6 +7,7 @@ import {
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
+import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow } from "./history.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -294,8 +295,13 @@ export default function IdeaBoard() {
 
   const updateProject = (fn) =>
     setProjects((ps) => ps.map((p) => (p.id === currentProjectId ? fn(p) : p)));
-  const setBoards = (fn) =>
+  // 利用者の操作でボードを書き換えた印（元に戻すの履歴に積む。印の無い書き換え＝他の端末の版などは履歴を消す）
+  const editMarkRef = useRef(null);
+  const markEdit = () => { editMarkRef.current = { pid: currentProjectId, at: Date.now() }; };
+  const setBoards = (fn) => {
+    markEdit();
     updateProject((p) => ({ ...p, boards: typeof fn === "function" ? fn(p.boards) : fn }));
+  };
   const setCurrentId = (id) => updateProject((p) => ({ ...p, currentBoardId: id }));
 
   const board = boards.find((b) => b.id === currentId) || null;
@@ -1721,6 +1727,41 @@ export default function IdeaBoard() {
     setPendingNote(null);
   };
 
+  // 付箋のすぐ右に、同じ色・タグの付箋を作って線でつなぐ（同じ親の中。右がふさがっていれば空くまで右へ）
+  // 入れ子の中で親の枠からはみ出すときは、下に作る
+  const SIDE_GAP = 24;
+  const addSideNote = (src) => {
+    const newId = nextId();
+    updateBoard((b) => {
+      const num = b.nextNum || 1;
+      const n = makeNote(0, 0, src.parentId, num);
+      Object.assign(n, { id: newId, color: src.color, tags: [...(src.tags || [])], useTitle: !!src.useTitle, w: src.w, h: src.h });
+      const gap = gridRef.current ? Math.max(GRID, snap(SIDE_GAP)) : SIDE_GAP;
+      const sizeOf = (m) => (m.expanded ? { w: m.ew, h: m.eh } : { w: m.w, h: m.h });
+      const sibs = b.notes.filter((m) => (m.parentId || null) === (src.parentId || null)).map((m) => ({ x: m.x, y: m.y, ...sizeOf(m) }));
+      const hits = (x, y) => sibs.find((r) => x < r.x + r.w && x + n.w > r.x && y < r.y + r.h && y + n.h > r.y);
+      const ss = sizeOf(src);
+      const place = (dx, dy) => {
+        let x = dx ? src.x + ss.w + gap : src.x, y = dy ? src.y + ss.h + gap : src.y;
+        if (gridRef.current) { x = snap(x); y = snap(y); }
+        for (let i = 0, r; i < 200 && (r = hits(x, y)); i++) {
+          if (dx) x = gridRef.current ? snap(r.x + r.w + gap) : r.x + r.w + gap;
+          else y = gridRef.current ? snap(r.y + r.h + gap) : r.y + r.h + gap;
+        }
+        return { x, y };
+      };
+      let pos = place(1, 0);
+      const parent = src.parentId && b.notes.find((m) => m.id === src.parentId);
+      if (parent && pos.x + n.w > parent.ew - 16) pos = place(0, 1); // 親の中のボードの幅（枠の余白を除く）
+      n.x = src.parentId ? Math.max(0, pos.x) : pos.x;
+      n.y = src.parentId ? Math.max(0, pos.y) : pos.y;
+      n.z = ++zRef.current;
+      return { ...b, nextNum: num + 1, notes: [...b.notes, n], edges: [...(b.edges || []), { id: nextId(), from: src.id, to: newId }] };
+    });
+    // 貼ったらすぐ書けるように、入力欄にカーソルを置く
+    setTimeout(() => noteEls.current[newId]?.querySelector("input, textarea")?.focus({ preventScroll: false }), 50);
+  };
+
   // ---- ボード直書きの文字 ----
   const TEXT_SIZES = settings.textSizes?.length ? settings.textSizes : DEFAULT_SETTINGS.textSizes;
   const textDragRef = useRef(null);
@@ -2123,6 +2164,93 @@ export default function IdeaBoard() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedIds, selectedTextIds, settings.confirmDelete, notes, byParent]);
+
+  // ---- 元に戻す（Ctrl+Z）／やり直す（Ctrl+Shift+Z・Ctrl+Y）（history.js） ----
+  // プロジェクトのボード一式が変わるたびに、変わる前の控えを積む。履歴はプロジェクトごと・保存しない
+  const histRef = useRef({});   // pid → 履歴
+  const seenRef = useRef({});   // pid → 最後に見た { boards, currentBoardId }
+  const gestureRef = useRef({ down: false, boundary: false }); // 押している間は1手。押し始め・キー操作で次の手
+  const [histFlags, setHistFlags] = useState({ u: false, r: false });
+  const curSnap = () => (project ? { boards: project.boards, currentBoardId: project.currentBoardId } : null);
+  const refreshHistFlags = () => {
+    const cur = curSnap(), h = project && histRef.current[project.id];
+    const u = !!cur && canUndo(h, cur), r = !!cur && canRedo(h, cur);
+    setHistFlags((f) => (f.u === u && f.r === r ? f : { u, r }));
+  };
+  useEffect(() => {
+    if (!project) return;
+    const pid = project.id;
+    const cur = curSnap();
+    const seen = seenRef.current[pid];
+    seenRef.current[pid] = cur;
+    const mark = editMarkRef.current;
+    editMarkRef.current = null;
+    if (seen && seen.boards !== cur.boards) {
+      if (mark && mark.pid === pid && Date.now() - mark.at < 1000) {
+        const h = (histRef.current[pid] ||= makeHist());
+        const g = gestureRef.current;
+        recordChange(h, seen, Date.now(), { boundary: g.boundary, pointerDown: g.down });
+        g.boundary = false;
+      } else {
+        // 利用者の操作ではない書き換え（他の端末の版の読み込み・復元ポイント）。前の状態へ戻すと上書きになるので履歴を消す
+        delete histRef.current[pid];
+      }
+    }
+    refreshHistFlags();
+  }, [project?.id, project?.boards]);
+  // 入力が止まって手が閉じたら、ボタンの状態を合わせる（押しただけの手は戻すものが無い）
+  const refreshHistRef = useRef(refreshHistFlags);
+  refreshHistRef.current = refreshHistFlags;
+  useEffect(() => {
+    const id = setInterval(() => refreshHistRef.current(), 700);
+    return () => clearInterval(id);
+  }, []);
+
+  const applyHist = (dir) => {
+    if (!project || confirmBox || pendingNote) return;
+    const pid = project.id;
+    const h = histRef.current[pid];
+    const cur = curSnap();
+    const snap = h && (dir < 0 ? undoStep(h, cur) : redoStep(h, cur));
+    if (!snap) { refreshHistFlags(); return; }
+    const showId = boardToShow(snap, cur);
+    seenRef.current[pid] = { boards: snap.boards, currentBoardId: showId };
+    setProjects((ps) => ps.map((p) => (p.id === pid ? { ...p, boards: snap.boards, currentBoardId: showId } : p)));
+    setSelectedIds([]);
+    setSelectedTextIds([]);
+    setConnectFrom(null);
+    setEdgeMenu(null);
+  };
+  const applyHistRef = useRef(applyHist);
+  applyHistRef.current = applyHist;
+
+  useEffect(() => {
+    const typing = (t) => t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+    const onDown = () => { gestureRef.current.down = true; gestureRef.current.boundary = true; };
+    const onUp = () => { gestureRef.current.down = false; };
+    const onKey = (e) => {
+      if (!typing(e.target)) gestureRef.current.boundary = true; // Delete などのキー操作は前の手と分ける
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = (e.key || "").toLowerCase();
+      const undo = k === "z" && !e.shiftKey;
+      const redo = (k === "z" && e.shiftKey) || (k === "y" && !e.shiftKey);
+      if (!undo && !redo) return;
+      // 文字を入力している欄では、ブラウザの文字の取り消しを使う
+      if (typing(e.target)) return;
+      e.preventDefault();
+      applyHistRef.current(undo ? -1 : 1);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, []);
 
   // ---- 範囲選択（マーキー）と領域作成 ----
   const onBoardPointerDown = (e) => {
@@ -2574,6 +2702,7 @@ export default function IdeaBoard() {
     const subtreeSet = new Set(subtreeIds);
     const srcNotes = subtreeIds.map((id) => noteMap[id]).filter(Boolean);
     const srcEdges = edges.filter((e) => subtreeSet.has(e.from) && subtreeSet.has(e.to));
+    markEdit();
     setProjects((ps) =>
       ps.map((p) => {
         if (p.id !== targetProjectId) return p;
@@ -2638,6 +2767,7 @@ export default function IdeaBoard() {
   const transferTo = async ({ toPid, toBid, move, noteIds = [], textIds = [] }) => {
     if (toPid !== currentProjectId && !(await ensureProject(toPid))) return false;
     const from = { pid: currentProjectId, bid: currentId };
+    markEdit();
     setProjects((ps) => transferNotes(ps, {
       from, to: { pid: toPid, bid: toBid }, noteIds, textIds, move, newId: nextId, newZ: () => ++zRef.current,
     }).projects);
@@ -2937,6 +3067,7 @@ export default function IdeaBoard() {
           else delete noteEls.current[n.id];
         }}
         className="note-enter"
+        data-note={n.id}
         onPointerDown={(e) => onNotePointerDown(e, n, depth)}
         onPointerMove={onNotePointerMove}
         onPointerUp={(e) => onNotePointerUp(e, n.id)}
@@ -3037,6 +3168,15 @@ export default function IdeaBoard() {
             </button>
           )}
           <div style={{ flex: 1 }} />
+          <button
+            data-nodrag
+            data-sidenote
+            title="右に同じ色・タグの付箋を作って線でつなぐ"
+            onClick={() => addSideNote(n)}
+            style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#3E3A33", padding: "0 2px", whiteSpace: "nowrap" }}
+          >
+            ＋→
+          </button>
           <button
             data-nodrag
             data-copymenu
@@ -3995,6 +4135,28 @@ export default function IdeaBoard() {
           style={{ display: "none" }}
           onChange={(e) => { addImageFiles(e.target.files); e.target.value = ""; }}
         />
+
+        {/* 元に戻す・やり直す */}
+        <div style={{ display: "flex", alignItems: "center", border: "1px solid #8A857B", borderRadius: 6, overflow: "hidden" }}>
+          <button
+            data-undo
+            title="元に戻す（Ctrl+Z）"
+            disabled={!histFlags.u}
+            onClick={() => applyHist(-1)}
+            style={{ border: "none", background: "transparent", color: histFlags.u ? "#F6F2E9" : "#6E6A61", fontSize: 12, padding: "4px 8px", cursor: histFlags.u ? "pointer" : "default", whiteSpace: "nowrap" }}
+          >
+            ↶ 戻す
+          </button>
+          <button
+            data-redo
+            title="やり直す（Ctrl+Shift+Z / Ctrl+Y）"
+            disabled={!histFlags.r}
+            onClick={() => applyHist(1)}
+            style={{ border: "none", borderLeft: "1px solid #8A857B", background: "transparent", color: histFlags.r ? "#F6F2E9" : "#6E6A61", fontSize: 12, padding: "4px 8px", cursor: histFlags.r ? "pointer" : "default", whiteSpace: "nowrap" }}
+          >
+            ↷
+          </button>
+        </div>
 
         {/* 描く・選ぶ */}
         <button
