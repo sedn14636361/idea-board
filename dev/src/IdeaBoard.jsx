@@ -1698,9 +1698,11 @@ export default function IdeaBoard() {
   // ---- 追加 ----
   // 実際に付箋を貼る（props でタイトル・色・タグを指定できる）
   const addNoteNow = (x, y, parentId = null, props = null) => {
+    const newId = nextId();
     updateBoard((b) => {
       const num = b.nextNum || 1;
       const n = makeNote(x, y, parentId, num);
+      n.id = newId;
       if (props) Object.assign(n, props);
       if (gridRef.current) {
         n.x = parentId ? Math.max(0, snap(n.x)) : snap(n.x);
@@ -1709,6 +1711,23 @@ export default function IdeaBoard() {
       n.z = ++zRef.current;
       return { ...b, nextNum: num + 1, notes: [...b.notes, n] };
     });
+    focusNew(() => noteEls.current[newId]);
+  };
+
+  // 作った付箋・文字の入力欄にカーソルを置く。空いている最初の欄（タイトル欄があればタイトル。
+  // 貼る前の画面でタイトルを書いていれば本文）。
+  // クリックで作ったときは React がその直後（マイクロタスク）に描くので、まずそこで置く（すぐ打った文字を落とさない）。
+  // まだ描かれていなければ数フレーム待つ。縮小して見出しだけの表示など、入力欄が見えていなければ何もしない
+  const focusNew = (getEl) => {
+    const tryFocus = () => {
+      const el = getEl();
+      if (!el) return false;
+      const boxes = [...el.querySelectorAll("input, textarea")].filter((f) => f.offsetParent !== null);
+      (boxes.find((f) => !f.value) || boxes[boxes.length - 1])?.focus();
+      return true;
+    };
+    const retry = (tries) => requestAnimationFrame(() => { if (!tryFocus() && tries > 0) retry(tries - 1); });
+    queueMicrotask(() => { if (!tryFocus()) retry(10); });
   };
 
   // プロパティ選択モードのときは、貼る前に設定パネルを出す
@@ -1758,8 +1777,7 @@ export default function IdeaBoard() {
       n.z = ++zRef.current;
       return { ...b, nextNum: num + 1, notes: [...b.notes, n], edges: [...(b.edges || []), { id: nextId(), from: src.id, to: newId }] };
     });
-    // 貼ったらすぐ書けるように、入力欄にカーソルを置く
-    setTimeout(() => noteEls.current[newId]?.querySelector("input, textarea")?.focus({ preventScroll: false }), 50);
+    focusNew(() => noteEls.current[newId]);
   };
 
   // ---- ボード直書きの文字 ----
@@ -1781,7 +1799,9 @@ export default function IdeaBoard() {
     let y = viewOrigin().y + 120 / zf;
     if (gridRef.current) { x = snap(x); y = snap(y); }
     zRef.current += 1;
-    setTexts((ts) => [...ts, { id: nextId(), x, y, text: "", size: 1, z: zRef.current }]);
+    const id = nextId();
+    setTexts((ts) => [...ts, { id, x, y, text: "", size: 1, z: zRef.current }]);
+    focusNew(() => document.querySelector(`[data-text="${id}"]`));
   };
 
   const onTextDragDown = (e, t) => {
@@ -5388,6 +5408,7 @@ export default function IdeaBoard() {
             return (
               <div
                 key={t.id}
+                data-text={t.id}
                 className="btext"
                 style={{
                   position: "absolute", left: t.x, top: t.y, zIndex: t.z || 1,
@@ -6654,7 +6675,7 @@ export default function IdeaBoard() {
                 value={pendingNote.title}
                 placeholder="タイトル"
                 onChange={(e) => setPendingNote((p) => ({ ...p, title: e.target.value }))}
-                onKeyDown={(e) => { if (e.key === "Enter") commitPendingNote(); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitPendingNote(); } }}
                 style={{
                   width: "100%", boxSizing: "border-box", border: "1px solid #C9C2B2", borderRadius: 5,
                   fontSize: 13, fontWeight: 700, padding: "5px 8px", fontFamily: "inherit",
