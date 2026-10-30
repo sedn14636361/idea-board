@@ -40,6 +40,7 @@ const all = [
   ["undo", "undo.mjs", { BASE }],                                    // 元に戻す・やり直す
   ["undo-sync", "undo-sync.mjs", { BASE }],                          // 他の端末の版を読み込んだら履歴を消す
   ["side-note", "side-note.mjs", { BASE }],                          // 付箋の右に同じ色・タグの付箋を作る
+  ["autofocus", "autofocus.mjs", { BASE }],                          // 付箋・文字を作ったらそのまま書ける
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);
