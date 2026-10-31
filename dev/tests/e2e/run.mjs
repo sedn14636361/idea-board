@@ -41,6 +41,7 @@ const all = [
   ["undo-sync", "undo-sync.mjs", { BASE }],                          // 他の端末の版を読み込んだら履歴を消す
   ["side-note", "side-note.mjs", { BASE }],                          // 付箋の右に同じ色・タグの付箋を作る
   ["autofocus", "autofocus.mjs", { BASE }],                          // 付箋・文字を作ったらそのまま書ける
+  ["bulk-ops", "bulk-ops.mjs", { BASE }],                            // 選んだ付箋のタグ一括・格子に整列・領域で囲む
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);

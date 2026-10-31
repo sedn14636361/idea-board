@@ -8,6 +8,7 @@ import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
 import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow } from "./history.js";
+import { tidyGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -2236,8 +2237,12 @@ export default function IdeaBoard() {
     const showId = boardToShow(snap, cur);
     seenRef.current[pid] = { boards: snap.boards, currentBoardId: showId };
     setProjects((ps) => ps.map((p) => (p.id === pid ? { ...p, boards: snap.boards, currentBoardId: showId } : p)));
-    setSelectedIds([]);
-    setSelectedTextIds([]);
+    // 選択は、戻した先にも残っている物だけ保つ（整列を戻して並べ直す、などがそのままできるように）
+    const shown = snap.boards.find((b) => b.id === showId);
+    const keepIds = showId === cur.currentBoardId ? new Set((shown?.notes || []).filter((n) => !n.parentId).map((n) => n.id)) : new Set();
+    const keepTexts = showId === cur.currentBoardId ? new Set((shown?.texts || []).map((t) => t.id)) : new Set();
+    setSelectedIds((ids) => ids.filter((id) => keepIds.has(id)));
+    setSelectedTextIds((ids) => ids.filter((id) => keepTexts.has(id)));
     setConnectFrom(null);
     setEdgeMenu(null);
   };
@@ -2893,13 +2898,112 @@ export default function IdeaBoard() {
     return cs.size === 1 ? [...cs][0] : null;
   };
 
+  // ---- 選んだ付箋のタグ・整列・領域（arrange.js） ----
+  const [selTagOpen, setSelTagOpen] = useState(false);   // 範囲選択の「タグ」
+  const [listTagOpen, setListTagOpen] = useState(false); // 付箋リストの「タグ」
+  const [bulkTagInput, setBulkTagInput] = useState("");
+  // 全員に付いていれば全員から外す。それ以外は全員に付ける（中の付箋は変えない）
+  const toggleTagOf = (ids, tag) => setNotes((ns) => toggleTagOn(ns, ids, tag));
+  const addTagToAll = (ids, value) => {
+    const t = (value || "").trim();
+    if (!t) return;
+    const set = new Set(ids);
+    setNotes((ns) => ns.map((n) => (set.has(n.id) && !(n.tags || []).includes(t) ? { ...n, tags: [...(n.tags || []), t] } : n)));
+  };
+  // タグの候補（設定のカテゴリ順）と、選んだ付箋に付いている自由タグ。全員に付いているものは塗り、一部なら点線の枠と人数
+  const tagChoices = (ids) => {
+    const picked = notes.filter((n) => ids.includes(n.id));
+    const cats = settings.presetTags || [];
+    const preset = new Set(cats.flatMap((c) => c.tags || []));
+    const free = [...new Set(picked.flatMap((n) => n.tags || []))].filter((t) => !preset.has(t));
+    const st = tagStates(picked, [...preset, ...free]);
+    const chip = (t) => {
+      const state = st[t], tc = tagColorOf(t);
+      const k = picked.filter((n) => (n.tags || []).includes(t)).length;
+      return (
+        <button
+          key={t}
+          data-tag={t}
+          data-state={state}
+          title={state === "all" ? `タグ「${t}」を全員から外す` : `タグ「${t}」を全員につける`}
+          onClick={() => toggleTagOf(ids, t)}
+          style={{
+            border: state === "some" ? `1.5px dashed ${tc}` : "1.5px solid transparent", borderRadius: 8, cursor: "pointer",
+            fontSize: 10.5, padding: "1px 7px", fontWeight: 700,
+            background: state === "all" ? tc : tint(tc, state === "some" ? 0.25 : 0.12),
+            color: state === "all" ? "#FFFDF6" : tc,
+          }}
+        >
+          {state === "all" ? "✓ " : ""}{t}{state === "some" ? ` ${k}/${picked.length}` : ""}
+        </button>
+      );
+    };
+    return (
+      <>
+        <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
+          <input
+            value={bulkTagInput}
+            placeholder="タグ名"
+            onChange={(e) => setBulkTagInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { addTagToAll(ids, bulkTagInput); setBulkTagInput(""); } }}
+            style={{ flex: 1, minWidth: 0, border: "1px solid #C9C2B2", borderRadius: 5, fontSize: 12, padding: "3px 6px", fontFamily: "inherit", color: "#3E3A33", background: "#fff" }}
+          />
+          <button
+            onClick={() => { addTagToAll(ids, bulkTagInput); setBulkTagInput(""); }}
+            style={{ border: "none", borderRadius: 5, background: "#3E3A33", color: "#F6F2E9", fontSize: 12, padding: "3px 8px", cursor: "pointer" }}
+          >
+            追加
+          </button>
+        </div>
+        <div style={{ maxHeight: 220, overflowY: "auto" }}>
+          {cats.map((cat, ci) => (cat.tags || []).length > 0 && (
+            <div key={ci} style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 10, color: cat.color || CATEGORY_FALLBACK[ci % CATEGORY_FALLBACK.length], fontWeight: 700, marginBottom: 2 }}>{cat.name}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{(cat.tags || []).map(chip)}</div>
+            </div>
+          ))}
+          {free.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 10, color: FREE_TAG_COLOR, fontWeight: 700, marginBottom: 2 }}>その他</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{free.map(chip)}</div>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  const shownSize = (n) => (n.expanded ? { w: n.ew, h: n.eh } : { w: n.w, h: n.h });
+  // 左上の付箋を起点に、等間隔の格子に並べ直す（すき間 24px。グリッド配置なら目盛りの幅）。文字は動かさない
+  const tidySelected = () => {
+    const items = notes.filter((n) => selectedIds.includes(n.id)).map((n) => ({ id: n.id, x: n.x, y: n.y, ...shownSize(n) }));
+    if (items.length < 2) return;
+    const pos = tidyGrid(items, gridRef.current ? GRID : 24);
+    setNotes((ns) => ns.map((n) => (pos[n.id] ? { ...n, ...pos[n.id] } : n)));
+  };
+  // 選んだ付箋・文字がすべて入る領域を作る。色は付箋の色がそろっていればその色。作ったら名前の欄にカーソル
+  const encloseSelected = () => {
+    const zf = zoom || 1;
+    const rects = notes.filter((n) => selectedIds.includes(n.id)).map((n) => ({ x: n.x, y: n.y, ...shownSize(n) }));
+    for (const t of texts.filter((t) => selectedTextIds.includes(t.id))) {
+      const r = document.querySelector(`[data-text="${t.id}"]`)?.getBoundingClientRect();
+      rects.push({ x: t.x, y: t.y, w: r ? r.width / zf : 120, h: r ? r.height / zf : 30 });
+    }
+    const box = enclose(rects, { grid: gridRef.current ? GRID : 0 });
+    if (!box) return;
+    const c = sameColor(selectedIds);
+    const id = nextId();
+    setZones((zs) => [...zs, { id, ...box, color: (c != null ? COLORS[c] : COLORS[zs.length % COLORS.length]).edge, label: "" }]);
+    focusNew(() => document.querySelector(`[data-zone="${id}"]`));
+  };
+
   // 選択が無くなったら、範囲選択の「移動」の行き先も閉じる
   useEffect(() => {
     if (selectedIds.length + selectedTextIds.length === 0) setSelMoveOpen(false);
-    if (selectedIds.length === 0) setSelColorOpen(false);
+    if (selectedIds.length === 0) { setSelColorOpen(false); setSelTagOpen(false); }
   }, [selectedIds, selectedTextIds]);
   useEffect(() => {
-    if (listPicked.length === 0) setListColorOpen(false);
+    if (listPicked.length === 0) { setListColorOpen(false); setListTagOpen(false); }
   }, [listPicked]);
 
   // 移す先を選ぶ画面が開いたら、候補を読み直す
@@ -4924,22 +5028,28 @@ export default function IdeaBoard() {
                   <>
                   <div style={{ display: "flex", gap: 5 }}>
                     <button
-                      onClick={() => { setListActionOpen("copy"); setListColorOpen(false); }}
+                      onClick={() => { setListActionOpen("copy"); setListColorOpen(false); setListTagOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       複製
                     </button>
                     <button
-                      onClick={() => { setListActionOpen("move"); setListColorOpen(false); }}
+                      onClick={() => { setListActionOpen("move"); setListColorOpen(false); setListTagOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       移動
                     </button>
                     <button
-                      onClick={() => setListColorOpen((v) => !v)}
+                      onClick={() => { setListColorOpen((v) => !v); setListTagOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: listColorOpen ? "#EDE7DA" : "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       色
+                    </button>
+                    <button
+                      onClick={() => { setListTagOpen((v) => !v); setListColorOpen(false); }}
+                      style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: listTagOpen ? "#EDE7DA" : "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
+                    >
+                      タグ
                     </button>
                     <button
                       onClick={listDelete}
@@ -4966,6 +5076,11 @@ export default function IdeaBoard() {
                       {colorChoices(sameColor(listPicked), (i) => { setColorOf(listPicked, i); setListColorOpen(false); })}
                     </div>
                   ); })()}
+                  {listTagOpen && (
+                    <div data-listtag style={{ marginTop: 6, background: "#FFFDF6", border: "1px solid #D9D2C2", borderRadius: 6, padding: 6 }}>
+                      {tagChoices(listPicked)}
+                    </div>
+                  )}
                   </>
                 ) : (
                   <>
@@ -5136,6 +5251,7 @@ export default function IdeaBoard() {
           {zones.map((zn) => (
             <div
               key={zn.id}
+              data-zone={zn.id}
               style={{
                 position: "absolute", left: zn.x, top: zn.y, width: zn.w, height: zn.h,
                 background: tint(zn.color, 0.13),
@@ -5605,6 +5721,7 @@ export default function IdeaBoard() {
             zIndex: 150000, background: "#3E3A33", color: "#F6F2E9",
             borderRadius: 10, boxShadow: "0 6px 18px rgba(30,25,15,.4)",
             display: "flex", alignItems: "center", gap: 8, padding: "8px 14px",
+            flexWrap: "wrap", justifyContent: "center", width: "max-content", maxWidth: "calc(100vw - 24px)", boxSizing: "border-box",
           }}
         >
           <span style={{ fontSize: 13, fontWeight: 700 }}>{selectedIds.length + selectedTextIds.length}個選択中</span>
@@ -5615,7 +5732,7 @@ export default function IdeaBoard() {
             ⧉ 複製
           </button>
           <button
-            onClick={() => { setSelMoveOpen((v) => !v); setSelColorOpen(false); }}
+            onClick={() => { setSelMoveOpen((v) => !v); setSelColorOpen(false); setSelTagOpen(false); }}
             style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
           >
             ↗ 移動
@@ -5623,7 +5740,7 @@ export default function IdeaBoard() {
           {selectedIds.length > 0 && (
             <span style={{ position: "relative", display: "inline-flex" }}>
               <button
-                onClick={() => { setSelColorOpen((v) => !v); setSelMoveOpen(false); }}
+                onClick={() => { setSelColorOpen((v) => !v); setSelMoveOpen(false); setSelTagOpen(false); }}
                 style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
               >
                 ● 色
@@ -5646,6 +5763,47 @@ export default function IdeaBoard() {
             ); })()}
             </span>
           )}
+          {selectedIds.length > 0 && (
+            <span style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                onClick={() => { setSelTagOpen((v) => !v); setSelColorOpen(false); setSelMoveOpen(false); }}
+                style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+              >
+                🏷 タグ
+              </button>
+              {selTagOpen && (
+                <div
+                  data-nodrag
+                  data-seltag
+                  style={{
+                    position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "calc(100% + 16px)", width: 260,
+                    background: "#FFFDF6", color: "#3E3A33", border: "1px solid #D9D2C2", borderRadius: 8,
+                    boxShadow: "0 5px 16px rgba(40,35,20,.3)", padding: 8,
+                  }}
+                >
+                  {tagChoices(selectedIds)}
+                </div>
+              )}
+            </span>
+          )}
+          {selectedIds.length > 1 && (
+            <button
+              data-tidy
+              title="左上の付箋を起点に、等間隔に並べる"
+              onClick={tidySelected}
+              style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+            >
+              ▦ 整列
+            </button>
+          )}
+          <button
+            data-enclose
+            title="選んだものがすべて入る領域を作る"
+            onClick={encloseSelected}
+            style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+          >
+            ▢ 領域で囲む
+          </button>
           <button
             onClick={() => setExportOpen(true)}
             style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
@@ -5659,7 +5817,7 @@ export default function IdeaBoard() {
             ✕ 剥がす
           </button>
           <button
-            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); setSelColorOpen(false); }}
+            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); setSelColorOpen(false); setSelTagOpen(false); }}
             style={{ border: "1px solid #8A857B", borderRadius: 6, background: "transparent", color: "#D8D3C8", fontSize: 12, padding: "3px 10px", cursor: "pointer" }}
           >
             解除
