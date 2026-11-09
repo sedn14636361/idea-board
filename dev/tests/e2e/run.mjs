@@ -48,6 +48,7 @@ const all = [
   ["blank-text", "blank-text.mjs", { BASE }],                        // 空のまま離れた文字は消える
   ["shift-resize", "shift-resize.mjs", { BASE }],                    // Shift+角で幅か高さの片方だけ変える
   ["text-size", "text-size.mjs", { BASE }],                          // 直書きの文字は中身が全部入る大きさ・角で幅を決める
+  ["multi-grab", "multi-grab.mjs", { BASE }],                        // 2つ以上選んでいるときは、選んだ付箋のどこをつかんでも動かせる
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);

@@ -1,44 +1,16 @@
 // 選んだ付箋をまとめて扱う計算（画面に依存しない純粋な関数）
-//   tidyGrid   : 左上の付箋を起点に、等間隔の格子に並べ直す（Figma の Tidy Up と同じ形）
+//   snapToGrid : 選んだ付箋の左上を一番近い目盛りへ（6.14.0。6.10.0〜6.11.x の tidyGrid は格子に並べ直していた）
 //   enclose    : 選んだ物がすべて入る長方形（領域で囲む）
 //   tagStates  : 選んだ付箋それぞれにタグが付いているか（全員／一部／なし）
 
-// items: [{ id, x, y, w, h }]（w, h は今見えている大きさ。開いている付箋は開いた大きさ）
-// 戻り値: { id: { x, y } }。起点（いちばん左上 = x+y が最小）は動かない。
-// 順番は今の位置の読み順（上の行から、行の中は左から）。起点は先頭。
-// 列の数は √枚数 の切り上げ。i 番目は i % 列数 の列に入る。
-// 各列の左端はそろえ、列の幅はその列でいちばん広い付箋に合わせる（左右のすき間は、その列の最も広い付箋から gap）。
-// 列の中は上から詰める: 真上の付箋の下の縁から gap（6.11.0。以前は行の高さを行でいちばん高い付箋に合わせており、
-// 低い付箋の下が大きく空いていた）。行の上端はそろわないが、上下のすき間はすべて gap で、重ならない。
-export function tidyGrid(items, gap = 24) {
-  if (items.length === 0) return {};
-  const anchor = items.reduce((a, b) => {
-    const d = (b.x + b.y) - (a.x + a.y);
-    return d < 0 || (d === 0 && (b.y < a.y || (b.y === a.y && b.x < a.x))) ? b : a;
-  });
-  // 読み順: 上から見ていき、行の先頭の付箋の高さの半分より下に始まる付箋で次の行にする
-  const byY = items.filter((it) => it !== anchor).sort((a, b) => a.y - b.y || a.x - b.x);
-  const rowsIn = [];
-  for (const it of byY) {
-    const row = rowsIn[rowsIn.length - 1];
-    if (row && it.y < row.top + row.h / 2) row.items.push(it);
-    else rowsIn.push({ top: it.y, h: it.h, items: [it] });
-  }
-  const order = [anchor, ...rowsIn.flatMap((r) => r.items.sort((a, b) => a.x - b.x || a.y - b.y))];
-
-  const n = order.length;
-  const cols = Math.ceil(Math.sqrt(n));
-  const colW = Array(cols).fill(0);
-  order.forEach((it, i) => { colW[i % cols] = Math.max(colW[i % cols], it.w); });
-  const colX = [];
-  for (let c = 0, x = anchor.x; c < cols; c++) { colX.push(x); x += colW[c] + gap; }
-  const nextY = Array(cols).fill(anchor.y); // 各列で次の付箋を置く上端
+// 選んだ付箋の左上を、ボードの原点から数えた一番近い目盛り（grid の倍数）へ動かす（6.14.0）。
+// 付箋の大きさは使わない。同じ目盛りに来た付箋は重なってよい（ユーザー指定）。
+// items: [{ id, x, y }] → { id: { x, y } }
+export function snapToGrid(items, grid) {
+  const g = grid > 0 ? grid : 1;
+  const r = (v) => Math.round(v / g) * g || 0; // -0 を 0 にする
   const out = {};
-  order.forEach((it, i) => {
-    const c = i % cols;
-    out[it.id] = { x: colX[c], y: nextY[c] };
-    nextY[c] += it.h + gap;
-  });
+  for (const it of items) out[it.id] = { x: r(it.x), y: r(it.y) };
   return out;
 }
 

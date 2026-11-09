@@ -8,7 +8,7 @@ import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
 import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, rewriteHist, withoutBlankText, isBlankText } from "./history.js";
-import { tidyGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
+import { snapToGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -2667,14 +2667,26 @@ export default function IdeaBoard() {
   const onNotePointerDown = (e, note, depth) => {
     // 自分の中の操作UIだけを除外する（親のミニボードのdata-nodragに巻き込まれないように）
     const nd = e.target.closest("[data-nodrag]");
-    if (nd && e.currentTarget.contains(nd)) return;
+    if (nd && e.currentTarget.contains(nd)) {
+      // 2つ以上を選んでいるとき、選んだ付箋は本文・タイトル・タグの行などどこをつかんでも選択全体を動かせる（6.14.0）。
+      // 動かすまでは何もしない（soft）ので、動かさずに離せば今までどおり（本文ならそこにカーソルが入る）。
+      // ボタン・開いたメニュー・右下の角・中の付箋は今までどおり
+      const multi = depth === 0 && selectedIds.includes(note.id) && selectedIds.length + selectedTextIds.length >= 2;
+      const own = e.target.closest("[data-note]") === e.currentTarget;
+      const control = e.target.closest("button, select, a, [data-notepop], [data-resize], [data-toolmenu]");
+      if (!(multi && own && !control && e.button === 0)) return;
+      e.stopPropagation();
+      startNoteDrag(e, note, depth, null, true);
+      return;
+    }
     e.stopPropagation();
     startNoteDrag(e, note, depth, null);
   };
 
   // shiftPick: Shift で押したときの最上位の付箋の id（動かさずに離したら選択に足す・外す）。
   // Shift のときは選択を変えない（選択していない付箋をつかんでも解除しない）
-  const startNoteDrag = (e, note, depth, shiftPick) => {
+  // soft: 動かし始めるまではポインタを捕まえない（入力欄へのカーソル・クリックを今までどおりにするため）
+  const startNoteDrag = (e, note, depth, shiftPick, soft = false) => {
     setColorMenuFor(null);
     setToolMenuFor(null);
     setTagMenuFor(null);
@@ -2700,7 +2712,8 @@ export default function IdeaBoard() {
       id: note.id,
       startX: e.clientX, startY: e.clientY,
       origX: note.x, origY: note.y,
-      minX, minY, maxX, maxY, moved: false, shiftPick,
+      minX, minY, maxX, maxY, moved: false, shiftPick, soft,
+      captureEl: e.currentTarget, pointerId: e.pointerId,
       startWorld: toWorld(e.clientX, e.clientY), // 画面の端で自動スクロールしても付箋がついてくるよう、ボード座標で測る
       // 選択中の付箋をつかんだら、選択全体（文字も含む）をまとめて動かす
       group: inSelection
@@ -2710,7 +2723,7 @@ export default function IdeaBoard() {
         ? selectedTextIds.map((id) => { const t = texts.find((x) => x.id === id); return t ? { id, origX: t.x, origY: t.y } : null; }).filter(Boolean)
         : null,
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    if (!soft) e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   // ドラッグ中に画面の端へ寄せると、その方向へ自動でスクロールする（端のないボード）。
@@ -2746,8 +2759,17 @@ export default function IdeaBoard() {
     let dy = w.y - d.startWorld.y;
     d.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
     autoScrollFor(e.clientX, e.clientY);
-    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
-    if (d.shiftPick && !d.moved) return; // Shift+クリックの手ぶれで動かさない
+    if (Math.abs(dx) + Math.abs(dy) > 3 && !d.moved) {
+      d.moved = true;
+      if (d.soft) {
+        // 本文などをつかんで動かし始めた: 入力欄から離れ、文字の範囲選択を消して、ここからポインタを捕まえる
+        const a = document.activeElement;
+        if (a && d.captureEl.contains(a)) a.blur();
+        window.getSelection?.()?.removeAllRanges();
+        try { d.captureEl.setPointerCapture(d.pointerId); } catch { /* 離したあと */ }
+      }
+    }
+    if ((d.shiftPick || d.soft) && !d.moved) return; // Shift+クリック・選択中の本文のクリックの手ぶれで動かさない
     // Shift を押している間は、動かした量の大きい方へだけ動かす（真横なら y、真縦なら x を元のまま）。
     // 固定した向きは目盛りにも合わせない（合わせると元の位置からずれる）
     const fixX = e.shiftKey && Math.abs(dy) > Math.abs(dx);
@@ -3238,11 +3260,12 @@ export default function IdeaBoard() {
   };
 
   const shownSize = (n) => (n.expanded ? { w: n.ew, h: n.eh } : { w: n.w, h: n.h });
-  // 左上の付箋を起点に、等間隔の格子に並べ直す（すき間 24px。グリッド配置なら目盛りの幅）。文字は動かさない
+  // 選んだ付箋の左上を、一番近い目盛り（設定のグリッド間隔。既定 26px）へ動かす（6.14.0）。
+  // 付箋の大きさは使わず、重なってもよい（ユーザー指定）。グリッド配置でなくても目盛りは同じ間隔。文字は動かさない
   const tidySelected = () => {
-    const items = notes.filter((n) => selectedIds.includes(n.id)).map((n) => ({ id: n.id, x: n.x, y: n.y, ...shownSize(n) }));
-    if (items.length < 2) return;
-    const pos = tidyGrid(items, gridRef.current ? GRID : 24);
+    const items = notes.filter((n) => selectedIds.includes(n.id)).map((n) => ({ id: n.id, x: n.x, y: n.y }));
+    if (items.length < 1) return;
+    const pos = snapToGrid(items, GRID);
     setNotes((ns) => ns.map((n) => (pos[n.id] ? { ...n, ...pos[n.id] } : n)));
   };
   // 選んだ付箋・文字がすべて入る領域を作る。色は付箋の色がそろっていればその色。作ったら名前の欄にカーソル
@@ -6097,10 +6120,10 @@ export default function IdeaBoard() {
               )}
             </span>
           )}
-          {selectedIds.length > 1 && (
+          {selectedIds.length > 0 && (
             <button
               data-tidy
-              title="左上の付箋を起点に、等間隔に並べる"
+              title="一番近い目盛りにそろえる"
               onClick={tidySelected}
               style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
             >
