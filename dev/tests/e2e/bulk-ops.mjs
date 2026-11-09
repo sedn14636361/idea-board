@@ -80,8 +80,8 @@ await pg.getByRole("button", { name: "🏷 タグ" }).click();
 const before = posOf(b, [...ALL, "out"]);
 await pg.locator("[data-tidy]").click();
 b = await saved();
-// 単体試験と同じ計算: 3列×2行。列の幅 190 / 430 / 160、1行目の高さ 400（開いた big）
-eq("左上（s1）を起点に3列×2行、縁のすき間は24", posOf(b, ALL), [[300, 200], [514, 200], [968, 200], [300, 624], [514, 624]]);
+// 単体試験と同じ計算: 3列。列の幅 190 / 430 / 160。列の中は上から詰める（6.11.0）: s3 は s1 の下、s4 は開いた big の下に24
+eq("左上（s1）を起点に3列、縁のすき間は24", posOf(b, ALL), [[300, 200], [514, 200], [968, 200], [300, 394], [514, 624]]);
 eq("選ばなかった付箋は動かない", posOf(b, ["out"]), [before[5]]);
 eq("文字は動かない", [b.texts[0].x, b.texts[0].y], [1250, 700]);
 {
@@ -92,7 +92,7 @@ await pg.mouse.move(5, 995);
 await pg.keyboard.press("Control+z");
 eq("Ctrl+Z 1回で整列前に戻る", posOf(await saved(), [...ALL, "out"]), before);
 await pg.keyboard.press("Control+Shift+z");
-eq("やり直すと整列した位置", posOf(await saved(), ALL), [[300, 200], [514, 200], [968, 200], [300, 624], [514, 624]]);
+eq("やり直すと整列した位置", posOf(await saved(), ALL), [[300, 200], [514, 200], [968, 200], [300, 394], [514, 624]]);
 
 // ---- 3) 領域で囲む ----
 await pg.locator("[data-enclose]").click();

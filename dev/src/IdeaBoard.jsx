@@ -154,6 +154,81 @@ function collectDescendants(id, byParent, acc = []) {
   return acc;
 }
 
+// 付箋の操作列（6.11.0）。一番右のボタンが付箋からはみ出すなら、番号と色の丸（lead）以外のボタン
+// （toolsL・toolsR）を全部しまい、右端の「⋯」から名前つきのメニューで選べるようにする。
+// 入りきるかは、ボタンを出していたときに測った幅（need）と、今の操作列の幅で決める（しまっている間は測れないため）。
+// つかむためのすき間 BAR_GRAB を残す。幅が変わったら（大きさの変更・開閉）ResizeObserver で測り直す
+const BAR_GAP = 4, BAR_GRAB = 16;
+function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick, children }) {
+  const rowRef = useRef(null), leadRef = useRef(null), lRef = useRef(null), rRef = useRef(null);
+  const need = useRef(0);
+  const [fold, setFold] = useState(false);
+  const [, bump] = useState(0);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row || hidden) return;
+    if (!fold && leadRef.current && lRef.current && rRef.current) {
+      need.current = leadRef.current.offsetWidth + lRef.current.offsetWidth + rRef.current.offsetWidth + BAR_GAP * 3 + BAR_GRAB;
+    }
+    const cs = getComputedStyle(row);
+    const avail = row.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const f = need.current > avail;
+    if (f !== fold) setFold(f);
+  });
+  useEffect(() => {
+    const row = rowRef.current;
+    let live = true;
+    document.fonts?.ready?.then(() => { if (live) bump((x) => x + 1); }); // 字体が後から読み込まれて幅が変わるため
+    if (!row || typeof ResizeObserver === "undefined") return () => { live = false; };
+    const ro = new ResizeObserver(() => bump((x) => x + 1));
+    ro.observe(row);
+    return () => { live = false; ro.disconnect(); };
+  }, []);
+  const group = { display: "inline-flex", alignItems: "center", gap: BAR_GAP, flexShrink: 0 };
+  return (
+    // minHeight: しまっても行の高さを変えない（本文の位置が動かないように。ボタンを出しているときの高さ）
+    <div ref={rowRef} style={{ display: hidden ? "none" : "flex", alignItems: "center", gap: BAR_GAP, padding: "4px 6px 0", minHeight: 23, boxSizing: "border-box", flexShrink: 0, position: "relative" }}>
+      <span ref={leadRef} style={group}>{lead}</span>
+      {!fold && <span ref={lRef} style={group}>{toolsL}</span>}
+      <div style={{ flex: 1 }} />
+      {!fold && <span ref={rRef} style={group}>{toolsR}</span>}
+      {fold && (
+        <button
+          data-nodrag
+          data-toolmenu
+          title="ほかの操作"
+          onClick={onMenu}
+          style={{ border: "none", borderRadius: 4, cursor: "pointer", background: menuOpen ? "rgba(62,58,51,.15)" : "transparent", fontSize: 13, fontWeight: 700, lineHeight: 1, color: "#3E3A33", padding: "1px 4px", flexShrink: 0 }}
+        >
+          ⋯
+        </button>
+      )}
+      {fold && menuOpen && (
+        <div
+          data-nodrag
+          data-toolmenu
+          data-notepop
+          // 付箋の左端から右へ開く（幅の狭い付箋なので、右端から左へ開くと画面の左の端で切れる。色のメニューと同じ向き）
+          style={{ position: "absolute", top: 22, left: 4, zIndex: 100001, background: "#FFFDF6", borderRadius: 8, boxShadow: "0 5px 16px rgba(40,35,20,.3)", padding: 5, minWidth: 150 }}
+        >
+          {menu.map((m) => (
+            <button
+              key={m.key}
+              data-toolitem={m.key}
+              onClick={() => onPick(m.run)}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", border: "none", borderRadius: 5, background: "transparent", color: m.key === "remove" ? "#B0483C" : "#3E3A33", fontSize: 12, fontWeight: 700, padding: "5px 8px", cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              <span style={{ width: 22, textAlign: "center", flexShrink: 0 }}>{m.icon}</span>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
 export default function IdeaBoard() {
   const [projects, setProjects] = useState([]);     // 読み込み済みのプロジェクト
   const [projectMetas, setProjectMetas] = useState([]); // 一覧表示用の軽い情報（名前・件数）
@@ -166,6 +241,7 @@ export default function IdeaBoard() {
   const [quoteMenuFor, setQuoteMenuFor] = useState(null);
   const [quoteQuery, setQuoteQuery] = useState("");
   const [copyMenuFor, setCopyMenuFor] = useState(null);
+  const [toolMenuFor, setToolMenuFor] = useState(null); // 付箋の「⋯」（しまったボタンのメニュー）
   const [selectedIds, setSelectedIds] = useState([]); // 複数選択中の付箋（最上位のみ）
   const [selectedTextIds, setSelectedTextIds] = useState([]); // 複数選択中のボード文字
   const [selBox, setSelBox] = useState(null); // 範囲選択の矩形 {x1,y1,x2,y2}
@@ -1796,8 +1872,11 @@ export default function IdeaBoard() {
   const addTextCenter = () => {
     const sc = scrollerRef.current;
     const zf = zoom || 1;
-    let x = viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - 60;
-    let y = viewOrigin().y + 120 / zf;
+    addTextAt(viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - 60, viewOrigin().y + 120 / zf);
+  };
+
+  // (x, y) を左上にして直書きの文字を作り、そのまま書けるようにする（「＋ 追加」→「文字」と Ctrl/⌘+ダブルクリック）
+  const addTextAt = (x, y) => {
     if (gridRef.current) { x = snap(x); y = snap(y); }
     zRef.current += 1;
     const id = nextId();
@@ -2453,18 +2532,23 @@ export default function IdeaBoard() {
     );
   };
 
-  // ---- Shift+クリックで選択に足す・外す（6.10.1） ----
+  // ---- Shift を押しながら付箋を押す（6.10.1 / 6.11.0） ----
   // 最上位の付箋の外枠で、内側の要素より先に（capture で）受け取る。本文・タイトル・タグの行・ボタン・
-  // 大きさを変える角・開いた付箋の中・中の付箋のどこを押しても、その最上位の付箋を足す・外すだけにする。
-  // 開いている色・タグ・引用・コピーのメニュー（data-notepop）の中は対象外
-  const shiftPickRef = useRef(null); // 直前に Shift で足し引きした付箋。続くクリックを握りつぶすため
+  // 大きさを変える角・開いた付箋の中・中の付箋のどこを押しても:
+  //   動かさずに離す → その最上位の付箋を選択に足す・外す（onNotePointerUp）
+  //   動かす         → つかんだ付箋（中の付箋ならその付箋）を真縦・真横に動かす（onNotePointerMove）
+  // 開いている色・タグ・引用・コピー・「⋯」のメニュー（data-notepop）の中は対象外
+  const shiftPickRef = useRef(null); // 直前に Shift で押した付箋。続くクリックを握りつぶすため
   const isShiftPick = (e) => e.shiftKey && e.button === 0 && !e.target.closest("[data-notepop]");
+  const depthOf = (note) => { let d = 0, p = note.parentId; while (p && noteMap[p]) { d++; p = noteMap[p].parentId; } return d; };
   const onNoteShiftPointerDown = (e, note) => {
     shiftPickRef.current = null;
     if (!isShiftPick(e)) return;
     e.stopPropagation(); // 中の要素（ドラッグ・大きさ変更・中の付箋）へ渡さない
     shiftPickRef.current = note.id;
-    setSelectedIds((ids) => (ids.includes(note.id) ? ids.filter((i) => i !== note.id) : [...ids, note.id]));
+    const el = e.target.closest("[data-note]");
+    const grab = (el && noteMap[el.dataset.note]) || note;
+    startNoteDrag(e, grab, depthOf(grab), note.id);
   };
   // 文字カーソル・文字の範囲選択といった既定の動きを止める（pointerdown を止めると mousedown が来なくなるのでこちらで）
   const onNoteShiftMouseDown = (e) => {
@@ -2486,12 +2570,19 @@ export default function IdeaBoard() {
     const nd = e.target.closest("[data-nodrag]");
     if (nd && e.currentTarget.contains(nd)) return;
     e.stopPropagation();
+    startNoteDrag(e, note, depth, null);
+  };
+
+  // shiftPick: Shift で押したときの最上位の付箋の id（動かさずに離したら選択に足す・外す）。
+  // Shift のときは選択を変えない（選択していない付箋をつかんでも解除しない）
+  const startNoteDrag = (e, note, depth, shiftPick) => {
     setColorMenuFor(null);
+    setToolMenuFor(null);
     setTagMenuFor(null);
     setQuoteMenuFor(null);
     setCopyMenuFor(null);
     const inSelection = depth === 0 && selectedIds.includes(note.id);
-    if (!inSelection && (selectedIds.length > 0 || selectedTextIds.length > 0)) {
+    if (!shiftPick && !inSelection && (selectedIds.length > 0 || selectedTextIds.length > 0)) {
       setSelectedIds([]); // 選択外をつかんだら解除
       setSelectedTextIds([]);
     }
@@ -2510,7 +2601,7 @@ export default function IdeaBoard() {
       id: note.id,
       startX: e.clientX, startY: e.clientY,
       origX: note.x, origY: note.y,
-      minX, minY, maxX, maxY, moved: false,
+      minX, minY, maxX, maxY, moved: false, shiftPick,
       startWorld: toWorld(e.clientX, e.clientY), // 画面の端で自動スクロールしても付箋がついてくるよう、ボード座標で測る
       // 選択中の付箋をつかんだら、選択全体（文字も含む）をまとめて動かす
       group: inSelection
@@ -2552,11 +2643,19 @@ export default function IdeaBoard() {
     const d = dragRef.current;
     if (!d) return;
     const w = toWorld(e.clientX, e.clientY);
-    const dx = w.x - d.startWorld.x;
-    const dy = w.y - d.startWorld.y;
-    d.lastClient = { clientX: e.clientX, clientY: e.clientY };
+    let dx = w.x - d.startWorld.x;
+    let dy = w.y - d.startWorld.y;
+    d.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
     autoScrollFor(e.clientX, e.clientY);
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
+    if (d.shiftPick && !d.moved) return; // Shift+クリックの手ぶれで動かさない
+    // Shift を押している間は、動かした量の大きい方へだけ動かす（真横なら y、真縦なら x を元のまま）。
+    // 固定した向きは目盛りにも合わせない（合わせると元の位置からずれる）
+    const fixX = e.shiftKey && Math.abs(dy) > Math.abs(dx);
+    const fixY = e.shiftKey && !fixX;
+    if (fixX) dx = 0;
+    if (fixY) dy = 0;
+    const place = (o, v, fixed) => (fixed ? o : gridRef.current ? snap(o + v) : o + v);
     if (d.group) {
       // 選択グループ全体（付箋＋文字）を移動
       updateBoard((b) => ({
@@ -2564,30 +2663,33 @@ export default function IdeaBoard() {
         notes: b.notes.map((n) => {
           const g = d.group.find((x) => x.id === n.id);
           if (!g) return n;
-          let nx = g.origX + dx;
-          let ny = g.origY + dy;
-          if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
-          return { ...n, x: nx, y: ny };
+          return { ...n, x: place(g.origX, dx, fixX), y: place(g.origY, dy, fixY) };
         }),
         texts: (b.texts || []).map((t) => {
           const g = (d.groupTexts || []).find((x) => x.id === t.id);
           if (!g) return t;
-          let nx = g.origX + dx;
-          let ny = g.origY + dy;
-          if (gridRef.current) { nx = snap(nx); ny = snap(ny); }
-          return { ...t, x: nx, y: ny };
+          return { ...t, x: place(g.origX, dx, fixX), y: place(g.origY, dy, fixY) };
         }),
       }));
       return;
     }
-    let nx = Math.min(d.maxX, Math.max(d.minX, d.origX + dx));
-    let ny = Math.min(d.maxY, Math.max(d.minY, d.origY + dy));
-    if (gridRef.current) {
-      nx = Math.min(d.maxX, Math.max(d.minX, snap(nx)));
-      ny = Math.min(d.maxY, Math.max(d.minY, snap(ny)));
-    }
+    const nx = fixX ? d.origX : Math.min(d.maxX, Math.max(d.minX, place(d.origX, dx, false)));
+    const ny = fixY ? d.origY : Math.min(d.maxY, Math.max(d.minY, place(d.origY, dy, false)));
     setNotes((ns) => ns.map((n) => (n.id === d.id ? { ...n, x: nx, y: ny } : n)));
   };
+  // ドラッグ中に Shift を押した・離したときも、ポインタを動かさずに向きの固定を切り替える
+  const noteMoveRef = useRef(null);
+  noteMoveRef.current = onNotePointerMove;
+  useEffect(() => {
+    const f = (e) => {
+      if (e.key !== "Shift") return;
+      const d = dragRef.current;
+      if (d?.lastClient) noteMoveRef.current({ ...d.lastClient, shiftKey: e.type === "keydown" });
+    };
+    window.addEventListener("keydown", f);
+    window.addEventListener("keyup", f);
+    return () => { window.removeEventListener("keydown", f); window.removeEventListener("keyup", f); };
+  }, []);
 
   // 祖先-子孫の関係か（格納している/されている付箋同士は接続不可）
   const isAncestor = (ancestorId, id) => {
@@ -2602,6 +2704,14 @@ export default function IdeaBoard() {
   const onNotePointerUp = (e, id) => {
     const d = dragRef.current;
     dragRef.current = null;
+    // Shift で押して動かさずに離した → 最上位の付箋を選択に足す・外す（線でつなぐ待ちでもつながない）
+    if (d?.shiftPick) {
+      if (!d.moved) {
+        const pid = d.shiftPick;
+        setSelectedIds((ids) => (ids.includes(pid) ? ids.filter((i) => i !== pid) : [...ids, pid]));
+      }
+      return;
+    }
     if (connectFrom && !d?.moved && connectFrom !== id) {
       if (isAncestor(connectFrom, id) || isAncestor(id, connectFrom)) {
         // 親子（格納関係）は接続しない
@@ -3252,25 +3362,107 @@ export default function IdeaBoard() {
           cursor: "grab",
         }}
       >
-        {/* 操作列（ボタン以外の部分はドラッグのつかみ代になる） */}
-        <div style={{ display: asHeading ? "none" : "flex", alignItems: "center", gap: 4, padding: "4px 6px 0", flexShrink: 0, position: "relative" }}>
-          <span
-            title="この番号で他の付箋から引用できます（本文に #番号 と書く）"
-            style={{ fontSize: 10, fontWeight: 700, color: "rgba(62,58,51,.65)", flexShrink: 0 }}
-          >
-            #{n.num}
-          </span>
-          <button
-            data-nodrag
-            data-colormenu
-            title="色を変える"
-            onClick={() => { bringToFront(n.id); setColorMenuFor(colorMenuFor === n.id ? null : n.id); setTagMenuFor(null); }}
-            style={{
-              width: 15, height: 15, borderRadius: "50%",
-              border: "2px solid rgba(62,58,51,.45)",
-              background: c.edge, cursor: "pointer", padding: 0, flexShrink: 0,
-            }}
-          />
+        {/* 操作列（ボタン以外の部分はドラッグのつかみ代になる）。
+            一番右のボタンが付箋からはみ出すなら、番号と色の丸以外のボタンを全部「⋯」にしまう（6.11.0） */}
+        <NoteBar
+          hidden={asHeading}
+          lead={<>
+            <span
+              title="この番号で他の付箋から引用できます（本文に #番号 と書く）"
+              style={{ fontSize: 10, fontWeight: 700, color: "rgba(62,58,51,.65)", flexShrink: 0 }}
+            >
+              #{n.num}
+            </span>
+            <button
+              data-nodrag
+              data-colormenu
+              title="色を変える"
+              onClick={() => { bringToFront(n.id); setColorMenuFor(colorMenuFor === n.id ? null : n.id); setTagMenuFor(null); }}
+              style={{
+                width: 15, height: 15, borderRadius: "50%",
+                border: "2px solid rgba(62,58,51,.45)",
+                background: c.edge, cursor: "pointer", padding: 0, flexShrink: 0,
+              }}
+            />
+          </>}
+          toolsL={<>
+            <button
+              data-nodrag
+              title={n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う"}
+              onClick={() => updateNote(n.id, { useTitle: !n.useTitle })}
+              style={{
+                border: "none", borderRadius: 4, cursor: "pointer",
+                fontSize: 10, fontWeight: 700, padding: "1px 5px",
+                background: n.useTitle ? "rgba(62,58,51,.7)" : "transparent",
+                color: n.useTitle ? "#F6F2E9" : "rgba(62,58,51,.5)",
+              }}
+            >
+              T
+            </button>
+            {canNest && (
+              <button
+                data-nodrag
+                title={isExpanded ? "中のボードをしまう" : "中のボードを開く"}
+                onClick={() => updateNote(n.id, { expanded: !n.expanded })}
+                style={{
+                  border: "none", borderRadius: 4, cursor: "pointer",
+                  background: descendants > 0 ? "rgba(62,58,51,.12)" : "transparent",
+                  fontSize: 11, fontWeight: 700, color: "#3E3A33",
+                  padding: "1px 6px", whiteSpace: "nowrap",
+                }}
+              >
+                {isExpanded ? "▾" : `▸${descendants > 0 ? descendants : ""}`}
+              </button>
+            )}
+          </>}
+          toolsR={<>
+            <button
+              data-nodrag
+              data-sidenote
+              title="右に同じ色・タグの付箋を作って線でつなぐ"
+              onClick={() => addSideNote(n)}
+              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#3E3A33", padding: "0 2px", whiteSpace: "nowrap" }}
+            >
+              ＋→
+            </button>
+            <button
+              data-nodrag
+              data-copymenu
+              title="複製・他のボード/プロジェクトへコピー"
+              onClick={() => { bringToFront(n.id); setCopyMenuFor(copyMenuFor === n.id ? null : n.id); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null); }}
+              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, padding: 0 }}
+            >
+              ⧉
+            </button>
+            <button
+              data-nodrag
+              title={selected ? "接続を解除" : "線でつなぐ"}
+              onClick={() => setConnectFrom(selected ? null : n.id)}
+              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, padding: 0 }}
+            >
+              🔗
+            </button>
+            <button
+              data-nodrag
+              title="剥がす（中身も一緒）"
+              onClick={() => removeNote(n.id)}
+              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, padding: 0 }}
+            >
+              ✕
+            </button>
+          </>}
+          menuOpen={toolMenuFor === n.id}
+          onMenu={() => { bringToFront(n.id); setToolMenuFor(toolMenuFor === n.id ? null : n.id); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null); setCopyMenuFor(null); }}
+          onPick={(run) => { setToolMenuFor(null); run(); }}
+          menu={[
+            { key: "title", icon: "T", label: n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う", run: () => updateNote(n.id, { useTitle: !n.useTitle }) },
+            canNest && { key: "nest", icon: isExpanded ? "▾" : "▸", label: isExpanded ? "中のボードをしまう" : `中のボードを開く${descendants > 0 ? `（${descendants}枚）` : ""}`, run: () => updateNote(n.id, { expanded: !n.expanded }) },
+            { key: "side", icon: "＋→", label: "右に付箋を作る", run: () => addSideNote(n) },
+            { key: "copy", icon: "⧉", label: "複製・コピー", run: () => { bringToFront(n.id); setCopyMenuFor(n.id); } },
+            { key: "link", icon: "🔗", label: selected ? "接続を解除" : "線でつなぐ", run: () => setConnectFrom(selected ? null : n.id) },
+            { key: "remove", icon: "✕", label: "剥がす", run: () => removeNote(n.id) },
+          ].filter(Boolean)}
+        >
           {colorMenuFor === n.id && (() => { const withMemo = settings.showColorNotes !== false; return (
             <div
               data-nodrag
@@ -3290,53 +3482,6 @@ export default function IdeaBoard() {
               {colorChoices(n.color, (i) => { updateNote(n.id, { color: i }); setColorMenuFor(null); })}
             </div>
           ); })()}
-          <button
-            data-nodrag
-            title={n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う"}
-            onClick={() => updateNote(n.id, { useTitle: !n.useTitle })}
-            style={{
-              border: "none", borderRadius: 4, cursor: "pointer",
-              fontSize: 10, fontWeight: 700, padding: "1px 5px",
-              background: n.useTitle ? "rgba(62,58,51,.7)" : "transparent",
-              color: n.useTitle ? "#F6F2E9" : "rgba(62,58,51,.5)",
-            }}
-          >
-            T
-          </button>
-          {canNest && (
-            <button
-              data-nodrag
-              title={isExpanded ? "中のボードをしまう" : "中のボードを開く"}
-              onClick={() => updateNote(n.id, { expanded: !n.expanded })}
-              style={{
-                border: "none", borderRadius: 4, cursor: "pointer",
-                background: descendants > 0 ? "rgba(62,58,51,.12)" : "transparent",
-                fontSize: 11, fontWeight: 700, color: "#3E3A33",
-                padding: "1px 6px", whiteSpace: "nowrap",
-              }}
-            >
-              {isExpanded ? "▾" : `▸${descendants > 0 ? descendants : ""}`}
-            </button>
-          )}
-          <div style={{ flex: 1 }} />
-          <button
-            data-nodrag
-            data-sidenote
-            title="右に同じ色・タグの付箋を作って線でつなぐ"
-            onClick={() => addSideNote(n)}
-            style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#3E3A33", padding: "0 2px", whiteSpace: "nowrap" }}
-          >
-            ＋→
-          </button>
-          <button
-            data-nodrag
-            data-copymenu
-            title="複製・他のボード/プロジェクトへコピー"
-            onClick={() => { bringToFront(n.id); setCopyMenuFor(copyMenuFor === n.id ? null : n.id); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null); }}
-            style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, padding: 0 }}
-          >
-            ⧉
-          </button>
           {copyMenuFor === n.id && (
             <div
               data-nodrag
@@ -3373,23 +3518,7 @@ export default function IdeaBoard() {
               )}
             </div>
           )}
-          <button
-            data-nodrag
-            title={selected ? "接続を解除" : "線でつなぐ"}
-            onClick={() => setConnectFrom(selected ? null : n.id)}
-            style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, padding: 0 }}
-          >
-            🔗
-          </button>
-          <button
-            data-nodrag
-            title="剥がす（中身も一緒）"
-            onClick={() => removeNote(n.id)}
-            style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, padding: 0 }}
-          >
-            ✕
-          </button>
-        </div>
+        </NoteBar>
 
         {/* タイトル（1行）。使う設定のときだけ表示。空なら本文の1行目が見出しに使われる */}
         {!asHeading && n.useTitle && (
@@ -3929,6 +4058,7 @@ export default function IdeaBoard() {
         if (!e.target.closest("[data-tagmenu]")) setTagMenuFor(null);
         if (!e.target.closest("[data-quotemenu]")) setQuoteMenuFor(null);
         if (!e.target.closest("[data-copymenu]")) setCopyMenuFor(null);
+        if (!e.target.closest("[data-toolmenu]")) setToolMenuFor(null);
         if (!e.target.closest("[data-zonemenu]")) setZoneColorMenuFor(null);
         if (!e.target.closest("[data-sharemenu]")) setShareOpen(false);
         if (!e.target.closest("[data-addmenu]")) setAddMenuOpen(false);
@@ -5260,6 +5390,9 @@ export default function IdeaBoard() {
           onDoubleClick={(e) => {
             if (e.target !== contentRef.current) return;
             const p = toWorld(e.clientX, e.clientY);
+            // Ctrl（Mac は ⌘ も。Ctrl+クリックは右クリックになるため）+ダブルクリック: 押した位置に直書きの文字を作る（6.11.0）。
+            // 貼る前の画面は出さない
+            if (e.ctrlKey || e.metaKey) { addTextAt(p.x, p.y); return; }
             addNote(p.x - 95, p.y - 40, null);
           }}
           style={{
