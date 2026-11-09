@@ -8,7 +8,7 @@ import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
 import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, rewriteHist, withoutBlankText, isBlankText } from "./history.js";
-import { tidyGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
+import { snapToGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -1912,7 +1912,7 @@ export default function IdeaBoard() {
 
   // どこかを押すたびに、直書きの文字の道具（A・⠿・✕）を押したかを覚える（入力欄から離れる前に走る）
   useEffect(() => {
-    const f = (e) => { textToolRef.current = e.target?.closest?.(".btext-tools")?.parentElement?.dataset?.text || null; };
+    const f = (e) => { textToolRef.current = e.target?.closest?.(".btext-tools, .btext-resize")?.closest?.("[data-text]")?.dataset?.text || null; };
     window.addEventListener("pointerdown", f, true);
     return () => window.removeEventListener("pointerdown", f, true);
   }, []);
@@ -1973,6 +1973,61 @@ export default function IdeaBoard() {
   };
 
   const onTextDragUp = () => { const d = textDragRef.current; textDragRef.current = null; if (d) refocusIfBlank(d.id); };
+
+  // ---- 直書きの文字の大きさ（6.13.0）----
+  // ふだんは書いたことがすべて入る大きさ: 幅は一番長い行の実際の幅（TEXT_MAX_W まで。超えたら折り返す）、
+  // 高さは折り返しも含めた全部の行。角で幅を決めたら（t.w）その幅で折り返し、高さは同じく中身に合わせる
+  const TEXT_MAX_W = 640, TEXT_MIN_W = 48;
+  const measureRef = useRef(null);
+  const lineWidth = (ta, lines) => {
+    let m = measureRef.current;
+    if (!m) {
+      m = measureRef.current = document.createElement("span");
+      Object.assign(m.style, { position: "absolute", left: "-99999px", top: "0", visibility: "hidden", whiteSpace: "pre", pointerEvents: "none" });
+      document.body.appendChild(m);
+    }
+    const cs = getComputedStyle(ta);
+    Object.assign(m.style, { fontFamily: cs.fontFamily, fontSize: cs.fontSize, fontWeight: cs.fontWeight, fontStyle: cs.fontStyle, letterSpacing: cs.letterSpacing });
+    let w = 0;
+    for (const l of lines) { m.textContent = l || " "; w = Math.max(w, m.getBoundingClientRect().width); }
+    return w;
+  };
+  const fitTextArea = (ta) => {
+    const cs = getComputedStyle(ta);
+    const n = (k) => parseFloat(cs[k]) || 0;
+    const sideX = n("paddingLeft") + n("paddingRight") + n("borderLeftWidth") + n("borderRightWidth");
+    const manual = parseFloat(ta.dataset.w);
+    const caret = Math.ceil(n("fontSize") * 0.3); // 行末のカーソルのぶん
+    const w = manual > 0 ? manual : Math.min(TEXT_MAX_W, Math.ceil(lineWidth(ta, (ta.value || ta.placeholder).split("\n"))) + caret) + sideX;
+    ta.style.width = w + "px";
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + n("borderTopWidth") + n("borderBottomWidth") + "px";
+  };
+  const fitAllTexts = () => document.querySelectorAll("[data-text] > textarea").forEach(fitTextArea);
+  useLayoutEffect(fitAllTexts);
+  useEffect(() => { document.fonts?.ready?.then(() => fitAllTexts()); }, []); // 字体が後から読み込まれて幅が変わるため
+
+  const textResizeRef = useRef(null);
+  const onTextResizeDown = (e, t) => {
+    e.stopPropagation();
+    const ta = e.currentTarget.parentElement.querySelector("textarea");
+    textResizeRef.current = { id: t.id, startX: e.clientX, origW: ta.offsetWidth };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onTextResizeMove = (e) => {
+    const r = textResizeRef.current;
+    if (!r) return;
+    const zf = zoomRef.current || 1;
+    let w = Math.max(TEXT_MIN_W, Math.round(r.origW + (e.clientX - r.startX) / zf));
+    if (gridRef.current) w = Math.max(TEXT_MIN_W, snap(w));
+    updateText(r.id, { w });
+  };
+  const onTextResizeUp = () => { const r = textResizeRef.current; textResizeRef.current = null; if (r) refocusIfBlank(r.id); };
+  // 角のダブルクリック: 決めた幅をやめて、中身に合わせる
+  const autoTextWidth = (id) => {
+    setTexts((ts) => ts.map((t) => { if (t.id !== id || t.w == null) return t; const { w, ...rest } = t; return rest; }));
+    refocusIfBlank(id);
+  };
 
   const addNoteCenter = () => {
     const sc = scrollerRef.current;
@@ -2532,10 +2587,9 @@ export default function IdeaBoard() {
   const onZoneResizeMove = (e) => {
     const r = zoneResizeRef.current;
     if (!r) return;
-    const zf = zoomRef.current || 1;
-    let w = Math.max(80, r.origW + (e.clientX - r.startX) / zf);
-    let h = Math.max(60, r.origH + (e.clientY - r.startY) / zf);
-    if (gridRef.current) { w = Math.max(GRID * 2, snap(w)); h = Math.max(GRID * 2, snap(h)); }
+    r.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
+    const min = gridRef.current ? { w: GRID * 2, h: GRID * 2 } : { w: 80, h: 60 };
+    const { w, h } = lockSize(e, r, min);
     updateZone(r.id, { w, h });
   };
   const onZoneResizeUp = () => { zoneResizeRef.current = null; };
@@ -2590,6 +2644,9 @@ export default function IdeaBoard() {
     shiftPickRef.current = note.id;
     const el = e.target.closest("[data-note]");
     const grab = (el && noteMap[el.dataset.note]) || note;
+    // 右下の角なら、動かさずに大きさを変える（幅か高さの片方だけ。6.12.0）
+    const corner = e.target.closest("[data-resize]");
+    if (corner && corner.closest("[data-note]") === el) { startNoteResize(e, grab, note.id, corner); return; }
     startNoteDrag(e, grab, depthOf(grab), note.id);
   };
   // 文字カーソル・文字の範囲選択といった既定の動きを止める（pointerdown を止めると mousedown が来なくなるのでこちらで）
@@ -2610,14 +2667,26 @@ export default function IdeaBoard() {
   const onNotePointerDown = (e, note, depth) => {
     // 自分の中の操作UIだけを除外する（親のミニボードのdata-nodragに巻き込まれないように）
     const nd = e.target.closest("[data-nodrag]");
-    if (nd && e.currentTarget.contains(nd)) return;
+    if (nd && e.currentTarget.contains(nd)) {
+      // 2つ以上を選んでいるとき、選んだ付箋は本文・タイトル・タグの行などどこをつかんでも選択全体を動かせる（6.14.0）。
+      // 動かすまでは何もしない（soft）ので、動かさずに離せば今までどおり（本文ならそこにカーソルが入る）。
+      // ボタン・開いたメニュー・右下の角・中の付箋は今までどおり
+      const multi = depth === 0 && selectedIds.includes(note.id) && selectedIds.length + selectedTextIds.length >= 2;
+      const own = e.target.closest("[data-note]") === e.currentTarget;
+      const control = e.target.closest("button, select, a, [data-notepop], [data-resize], [data-toolmenu]");
+      if (!(multi && own && !control && e.button === 0)) return;
+      e.stopPropagation();
+      startNoteDrag(e, note, depth, null, true);
+      return;
+    }
     e.stopPropagation();
     startNoteDrag(e, note, depth, null);
   };
 
   // shiftPick: Shift で押したときの最上位の付箋の id（動かさずに離したら選択に足す・外す）。
   // Shift のときは選択を変えない（選択していない付箋をつかんでも解除しない）
-  const startNoteDrag = (e, note, depth, shiftPick) => {
+  // soft: 動かし始めるまではポインタを捕まえない（入力欄へのカーソル・クリックを今までどおりにするため）
+  const startNoteDrag = (e, note, depth, shiftPick, soft = false) => {
     setColorMenuFor(null);
     setToolMenuFor(null);
     setTagMenuFor(null);
@@ -2643,7 +2712,8 @@ export default function IdeaBoard() {
       id: note.id,
       startX: e.clientX, startY: e.clientY,
       origX: note.x, origY: note.y,
-      minX, minY, maxX, maxY, moved: false, shiftPick,
+      minX, minY, maxX, maxY, moved: false, shiftPick, soft,
+      captureEl: e.currentTarget, pointerId: e.pointerId,
       startWorld: toWorld(e.clientX, e.clientY), // 画面の端で自動スクロールしても付箋がついてくるよう、ボード座標で測る
       // 選択中の付箋をつかんだら、選択全体（文字も含む）をまとめて動かす
       group: inSelection
@@ -2653,7 +2723,7 @@ export default function IdeaBoard() {
         ? selectedTextIds.map((id) => { const t = texts.find((x) => x.id === id); return t ? { id, origX: t.x, origY: t.y } : null; }).filter(Boolean)
         : null,
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    if (!soft) e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   // ドラッグ中に画面の端へ寄せると、その方向へ自動でスクロールする（端のないボード）。
@@ -2689,8 +2759,17 @@ export default function IdeaBoard() {
     let dy = w.y - d.startWorld.y;
     d.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
     autoScrollFor(e.clientX, e.clientY);
-    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
-    if (d.shiftPick && !d.moved) return; // Shift+クリックの手ぶれで動かさない
+    if (Math.abs(dx) + Math.abs(dy) > 3 && !d.moved) {
+      d.moved = true;
+      if (d.soft) {
+        // 本文などをつかんで動かし始めた: 入力欄から離れ、文字の範囲選択を消して、ここからポインタを捕まえる
+        const a = document.activeElement;
+        if (a && d.captureEl.contains(a)) a.blur();
+        window.getSelection?.()?.removeAllRanges();
+        try { d.captureEl.setPointerCapture(d.pointerId); } catch { /* 離したあと */ }
+      }
+    }
+    if ((d.shiftPick || d.soft) && !d.moved) return; // Shift+クリック・選択中の本文のクリックの手ぶれで動かさない
     // Shift を押している間は、動かした量の大きい方へだけ動かす（真横なら y、真縦なら x を元のまま）。
     // 固定した向きは目盛りにも合わせない（合わせると元の位置からずれる）
     const fixX = e.shiftKey && Math.abs(dy) > Math.abs(dx);
@@ -2722,11 +2801,17 @@ export default function IdeaBoard() {
   // ドラッグ中に Shift を押した・離したときも、ポインタを動かさずに向きの固定を切り替える
   const noteMoveRef = useRef(null);
   noteMoveRef.current = onNotePointerMove;
+  const resizeMoveRef = useRef(null);
+  const zoneResizeMoveRef = useRef(null);
   useEffect(() => {
     const f = (e) => {
       if (e.key !== "Shift") return;
+      const shiftKey = e.type === "keydown";
       const d = dragRef.current;
-      if (d?.lastClient) noteMoveRef.current({ ...d.lastClient, shiftKey: e.type === "keydown" });
+      if (d?.lastClient) noteMoveRef.current({ ...d.lastClient, shiftKey });
+      // 大きさを変えている途中も、幅か高さの片方だけに切り替える（6.12.0）
+      if (resizeRef.current?.lastClient) resizeMoveRef.current({ ...resizeRef.current.lastClient, shiftKey });
+      if (zoneResizeRef.current?.lastClient) zoneResizeMoveRef.current({ ...zoneResizeRef.current.lastClient, shiftKey });
     };
     window.addEventListener("keydown", f);
     window.addEventListener("keyup", f);
@@ -2769,36 +2854,63 @@ export default function IdeaBoard() {
   };
 
   // ---- リサイズ ----
-  const onResizeDown = (e, note) => {
-    e.stopPropagation();
+  // shiftPick: Shift で角を押したときの最上位の付箋の id（動かさずに離したら選択に足す・外す。6.12.0）。
+  // el: ポインタを捕まえる要素（角）
+  const startNoteResize = (e, note, shiftPick, el) => {
     const exp = note.expanded;
     resizeRef.current = {
       id: note.id, expanded: exp,
       startX: e.clientX, startY: e.clientY,
       origW: exp ? note.ew : note.w,
       origH: exp ? note.eh : note.h,
+      shiftPick, moved: false,
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    el.setPointerCapture(e.pointerId);
+  };
+  const onResizeDown = (e, note) => {
+    e.stopPropagation();
+    startNoteResize(e, note, null, e.currentTarget);
+  };
+
+  // Shift を押している間は、引っぱった量の大きい方（幅か高さ）だけを変え、もう片方は元のまま（6.12.0。付箋と領域）。
+  // 固定した方は目盛りにも合わせない（合わせると元の大きさからずれる）
+  const lockSize = (e, r, min) => {
+    const zf = zoomRef.current || 1;
+    const dx = (e.clientX - r.startX) / zf, dy = (e.clientY - r.startY) / zf;
+    const fixW = e.shiftKey && Math.abs(dy) > Math.abs(dx);
+    const fixH = e.shiftKey && !fixW;
+    const size = (o, d, m, fixed) => {
+      if (fixed) return o;
+      const v = Math.max(m, o + d);
+      return gridRef.current ? Math.max(m, snap(v)) : v;
+    };
+    return { w: size(r.origW, dx, min.w, fixW), h: size(r.origH, dy, min.h, fixH), dx, dy };
   };
 
   const onResizeMove = (e) => {
     const r = resizeRef.current;
     if (!r) return;
-    const minW = r.expanded ? 240 : 120;
-    const minH = r.expanded ? 200 : 90;
-    const zf = zoomRef.current || 1;
-    let w = Math.max(minW, r.origW + (e.clientX - r.startX) / zf);
-    let h = Math.max(minH, r.origH + (e.clientY - r.startY) / zf);
-    if (gridRef.current) {
-      w = Math.max(minW, snap(w));
-      h = Math.max(minH, snap(h));
-    }
+    r.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
+    const { w, h, dx, dy } = lockSize(e, r, r.expanded ? { w: 240, h: 200 } : { w: 120, h: 90 });
+    if (Math.abs(dx) + Math.abs(dy) > 3) r.moved = true;
+    if (r.shiftPick && !r.moved) return; // Shift+クリックの手ぶれで大きさを変えない
     setNotes((ns) =>
       ns.map((n) => (n.id === r.id ? (r.expanded ? { ...n, ew: w, eh: h } : { ...n, w, h }) : n))
     );
   };
 
-  const onResizeUp = () => { resizeRef.current = null; };
+  resizeMoveRef.current = onResizeMove;
+  zoneResizeMoveRef.current = onZoneResizeMove;
+
+  const onResizeUp = () => {
+    const r = resizeRef.current;
+    resizeRef.current = null;
+    // Shift で角を押して動かさずに離した → 今までどおり最上位の付箋を選択に足す・外す
+    if (r?.shiftPick && !r.moved) {
+      const pid = r.shiftPick;
+      setSelectedIds((ids) => (ids.includes(pid) ? ids.filter((i) => i !== pid) : [...ids, pid]));
+    }
+  };
 
   // ---- 削除 ----
   // 確認するかどうかは設定に従う（すぐ消すか、一度たずねるか）
@@ -3148,11 +3260,12 @@ export default function IdeaBoard() {
   };
 
   const shownSize = (n) => (n.expanded ? { w: n.ew, h: n.eh } : { w: n.w, h: n.h });
-  // 左上の付箋を起点に、等間隔の格子に並べ直す（すき間 24px。グリッド配置なら目盛りの幅）。文字は動かさない
+  // 選んだ付箋の左上を、一番近い目盛り（設定のグリッド間隔。既定 26px）へ動かす（6.14.0）。
+  // 付箋の大きさは使わず、重なってもよい（ユーザー指定）。グリッド配置でなくても目盛りは同じ間隔。文字は動かさない
   const tidySelected = () => {
-    const items = notes.filter((n) => selectedIds.includes(n.id)).map((n) => ({ id: n.id, x: n.x, y: n.y, ...shownSize(n) }));
-    if (items.length < 2) return;
-    const pos = tidyGrid(items, gridRef.current ? GRID : 24);
+    const items = notes.filter((n) => selectedIds.includes(n.id)).map((n) => ({ id: n.id, x: n.x, y: n.y }));
+    if (items.length < 1) return;
+    const pos = snapToGrid(items, GRID);
     setNotes((ns) => ns.map((n) => (pos[n.id] ? { ...n, ...pos[n.id] } : n)));
   };
   // 選んだ付箋・文字がすべて入る領域を作る。色は付箋の色がそろっていればその色。作ったら名前の欄にカーソル
@@ -3995,6 +4108,7 @@ export default function IdeaBoard() {
         {/* リサイズハンドル */}
         <div
           data-nodrag
+          data-resize
           title="ドラッグで大きさを変える"
           onPointerDown={(e) => onResizeDown(e, n)}
           onPointerMove={onResizeMove}
@@ -4120,13 +4234,13 @@ export default function IdeaBoard() {
         button, input, select, textarea { -webkit-app-region: no-drag }
         .board-tabs::-webkit-scrollbar { height: 5px }
         .board-tabs::-webkit-scrollbar-thumb { background: #6B665C; border-radius: 3px }
-        .btext .btext-tools { opacity: 0; transition: opacity .12s ease }
-        .btext:hover .btext-tools, .btext:focus-within .btext-tools { opacity: 1 }
+        .btext .btext-tools, .btext .btext-resize { opacity: 0; transition: opacity .12s ease }
+        .btext:hover .btext-tools, .btext:focus-within .btext-tools, .btext:hover .btext-resize, .btext:focus-within .btext-resize { opacity: 1 }
         .btext textarea { border: 1px dashed transparent; border-radius: 4px }
         .btext:hover textarea, .btext textarea:focus { border-color: rgba(62,58,51,.35) }
         /* タッチ端末ではホバーできないので常に操作UIを表示 */
         @media (hover: none) {
-          .btext .btext-tools { opacity: .85 }
+          .btext .btext-tools, .btext .btext-resize { opacity: .85 }
           .btext textarea { border-color: rgba(62,58,51,.25) }
         }
         /* タッチのタップ遅延・意図しない拡大を防ぐ */
@@ -5724,8 +5838,6 @@ export default function IdeaBoard() {
           {/* ボード直書きの文字 */}
           {texts.map((t) => {
             const fs = TEXT_SIZES[t.size ?? 1] || TEXT_SIZES[1];
-            const lines = (t.text || "").split("\n");
-            const wCh = Math.max(4, ...lines.map((l) => l.length)) + 2;
             return (
               <div
                 key={t.id}
@@ -5775,19 +5887,35 @@ export default function IdeaBoard() {
                     ✕
                   </button>
                 </div>
+                {/* 幅と高さは fitTextArea が中身から決める（6.13.0）。t.w があればその幅で折り返す */}
                 <textarea
                   value={t.text}
-                  rows={Math.max(1, lines.length)}
+                  rows={1}
+                  data-w={t.w || ""}
                   placeholder="文字を入力"
                   onChange={(e) => updateText(t.id, { text: e.target.value })}
                   onBlur={(e) => onTextBlur(e, t.id)}
                   style={{
                     display: "block",
                     fontSize: fs, lineHeight: 1.5,
-                    width: `${wCh}em`, maxWidth: 640,
-                    background: "transparent", resize: "none",
+                    background: "transparent", resize: "none", overflow: "hidden",
                     fontFamily: "inherit", fontWeight: 700, color: "#3E3A33",
-                    padding: "1px 4px", boxSizing: "content-box",
+                    padding: "1px 4px", boxSizing: "border-box",
+                  }}
+                />
+                {/* 右下の角: 引っぱると幅を決める（高さは常に中身に合わせる）。ダブルクリックで中身に合わせた幅に戻す */}
+                <div
+                  className="btext-resize"
+                  data-textresize
+                  title="ドラッグで幅を変える（ダブルクリックで元に戻す）"
+                  onPointerDown={(e) => onTextResizeDown(e, t)}
+                  onPointerMove={onTextResizeMove}
+                  onPointerUp={onTextResizeUp}
+                  onDoubleClick={() => autoTextWidth(t.id)}
+                  style={{
+                    position: "absolute", right: -5, bottom: -5, width: 11, height: 11,
+                    cursor: "ew-resize", touchAction: "none", borderRadius: 3,
+                    background: "rgba(62,58,51,.85)", border: "2px solid #F6F2E9", boxSizing: "border-box",
                   }}
                 />
               </div>
@@ -5992,10 +6120,10 @@ export default function IdeaBoard() {
               )}
             </span>
           )}
-          {selectedIds.length > 1 && (
+          {selectedIds.length > 0 && (
             <button
               data-tidy
-              title="左上の付箋を起点に、等間隔に並べる"
+              title="一番近い目盛りにそろえる"
               onClick={tidySelected}
               style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
             >

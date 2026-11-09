@@ -1,4 +1,4 @@
-// 選んだ付箋のタグを一括で変える・格子に整列・領域で囲む（6.10.0）
+// 選んだ付箋のタグを一括で変える・整列（6.14.0 から一番近い目盛りへ）・領域で囲む（6.10.0）
 import { chromium } from "playwright";
 const BASE = process.env.BASE;
 let ng = 0;
@@ -76,23 +76,20 @@ eq("文字には何も起きない（タグは付箋だけ）", b.texts[0].text,
 eq("選択は残る", await pg.getByText(/個選択中$/).textContent(), "6個選択中");
 await pg.getByRole("button", { name: "🏷 タグ" }).click();
 
-// ---- 2) 整列（格子）----
+// ---- 2) 整列（一番近い目盛りへ）----
 const before = posOf(b, [...ALL, "out"]);
 await pg.locator("[data-tidy]").click();
 b = await saved();
-// 単体試験と同じ計算: 3列。列の幅 190 / 430 / 160。列の中は上から詰める（6.11.0）: s3 は s1 の下、s4 は開いた big の下に24
-eq("左上（s1）を起点に3列、縁のすき間は24", posOf(b, ALL), [[300, 200], [514, 200], [968, 200], [300, 394], [514, 624]]);
+// 6.14.0: 各付箋の左上を一番近い目盛り（26）へ（大きさは使わない）。s1(300,200) s2(1500,250) s3(260,900) s4(900,950) big(800,180)
+const SNAPPED = [[312, 208], [806, 182], [1508, 260], [260, 910], [910, 962]];
+eq("左上を一番近い目盛り（26 の倍数）へ", posOf(b, ALL), SNAPPED);
 eq("選ばなかった付箋は動かない", posOf(b, ["out"]), [before[5]]);
 eq("文字は動かない", [b.texts[0].x, b.texts[0].y], [1250, 700]);
-{
-  const r = b.notes.filter((n) => ALL.includes(n.id)).map((n) => ({ x: n.x, y: n.y, w: n.expanded ? n.ew : n.w, h: n.expanded ? n.eh : n.h }));
-  eq("重ならない", r.some((p, i) => r.some((q, j) => i < j && p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h)), false);
-}
 await pg.mouse.move(5, 995);
 await pg.keyboard.press("Control+z");
 eq("Ctrl+Z 1回で整列前に戻る", posOf(await saved(), [...ALL, "out"]), before);
 await pg.keyboard.press("Control+Shift+z");
-eq("やり直すと整列した位置", posOf(await saved(), ALL), [[300, 200], [514, 200], [968, 200], [300, 394], [514, 624]]);
+eq("やり直すと整列した位置", posOf(await saved(), ALL), SNAPPED);
 
 // ---- 3) 領域で囲む ----
 await pg.locator("[data-enclose]").click();
@@ -101,9 +98,10 @@ b = await saved();
 eq("領域が1つできる", b.zones.length, 1);
 const zn = b.zones[0];
 const textBox = await pg.evaluate((Z) => { const r = document.querySelector('[data-text="t1"]').getBoundingClientRect(); return { w: r.width / Z, h: r.height / Z }; }, Z);
-eq("左上は左上の付箋から 24・名前の欄のぶん 40 外", [zn.x, zn.y], [276, 160]);
-eq("下は一番下の付箋（s4: 624+200）から 24 外", zn.y + zn.h, 848);
-eq("右は一番右のもの（文字）から 24 外", Math.round(zn.x + zn.w), Math.round(Math.max(968 + 160, 1250 + textBox.w) + 24));
+// 整列後（6.14.0）: s1(312,208) big(806,182 開いて 430×400) s2(1508,260 160×140) s3(260,910) s4(910,962 220×200)
+eq("左上は一番左（s3: 260）から 24・一番上（big: 182）から名前の欄のぶん 40 外", [zn.x, zn.y], [236, 142]);
+eq("下は一番下の付箋（s4: 962+200）から 24 外", zn.y + zn.h, 1186);
+eq("右は一番右のもの（s2: 1508+160 か文字）から 24 外", Math.round(zn.x + zn.w), Math.round(Math.max(1508 + 160, 1250 + textBox.w) + 24));
 {
   const inside = (r) => r.x >= zn.x && r.y >= zn.y && r.x + r.w <= zn.x + zn.w && r.y + r.h <= zn.y + zn.h;
   const rs = b.notes.filter((n) => ALL.includes(n.id)).map((n) => ({ x: n.x, y: n.y, w: n.expanded ? n.ew : n.w, h: n.expanded ? n.eh : n.h }));
@@ -121,7 +119,7 @@ eq("色がまちまちなら順番の色（1つめ = レモン）", zn.color, "#
   const b2 = await saved();
   const dz = [b2.zones[0].x - zn.x, b2.zones[0].y - zn.y];
   eq("前提: 領域が動いた", dz[0] > 0 && dz[1] > 0, true);
-  eq("中の付箋も同じだけ動く", posOf(b2, ["s1", "s4"]), [[300 + dz[0], 200 + dz[1]], [514 + dz[0], 624 + dz[1]]]);
+  eq("中の付箋も同じだけ動く", posOf(b2, ["s1", "s4"]), [[312 + dz[0], 208 + dz[1]], [910 + dz[0], 962 + dz[1]]]);
   eq("外の付箋は動かない", posOf(b2, ["out"]), [before[5]]);
 }
 
