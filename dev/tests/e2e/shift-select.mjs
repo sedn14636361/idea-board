@@ -2,6 +2,9 @@
 //   本文・タイトル・タグの行・引用の表示・操作列のボタン・大きさを変える角・開いた付箋の中・中の付箋
 //   ボタンは押したことにならない／文字カーソルは入らない／動かない・大きさが変わらない
 //   開いている色のメニューの中は今までどおり（色が変わる）／Shift なしは今までどおり
+// Shift+ドラッグは真縦か真横にだけ動く（6.11.0）
+//   動かした量の大きい方へ／どこをつかんでも／選択は変えない／選択中なら選択全体／中の付箋は親の中で／
+//   ドラッグの途中で Shift を押しても／手ぶれでは動かない／グリッド配置でも固定した向きは目盛りに合わせない
 import { chromium } from "playwright";
 const BASE = process.env.BASE;
 let ng = 0;
@@ -106,6 +109,85 @@ await nA.locator("textarea").click();
 await pg.keyboard.type("x");
 await pg.waitForTimeout(1200);
 eq("Shift なしで本文を押すと書ける", (await saved()).find((n) => n.id === "A").text, "本文Ax");
+
+// ---- 5) Shift+ドラッグ（6.11.0）----
+const pos = async (id) => { await pg.waitForTimeout(1200); const n = (await saved()).find((m) => m.id === id); return [n.x, n.y]; }; // 保存は 0.8 秒あと
+const centerOf = async (loc) => { const b = await loc.boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+// from から (dx, dy) だけ、途中の点を通って動かす。shift: 押しながら
+const drag = async (from, dx, dy, { shift = true } = {}) => {
+  await pg.mouse.move(from.x, from.y);
+  if (shift) await pg.keyboard.down("Shift");
+  await pg.mouse.down();
+  await pg.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 5 });
+  await pg.mouse.move(from.x + dx, from.y + dy, { steps: 5 });
+  await pg.mouse.up();
+  if (shift) await pg.keyboard.up("Shift");
+  await pg.waitForTimeout(200);
+};
+await pg.mouse.click(5, 880); // 選択を解除（ボードの空いているところ）
+await pg.waitForTimeout(200);
+eq("前提: 何も選ばれていない", await picked(), []);
+eq("前提: A の位置", await pos("A"), [100, 100]);
+await drag(await centerOf(nA.locator("textarea")), 100, 30);
+eq("A の本文をつかんで右下へ（横が大きい）: 真横に 100 だけ動く", await pos("A"), [200, 100]);
+await drag(await centerOf(nA.locator('input[placeholder="タイトル"]')), 20, 120);
+eq("A のタイトル欄をつかんで下へ（縦が大きい）: 真下に 120 だけ動く", await pos("A"), [200, 220]);
+await drag(await centerOf(nA.locator('button[title="剥がす（中身も一緒）"]')), -40, -10);
+eq("A の ✕ をつかんで左へ: 真横に動き、剥がす確認は出ない", [await pos("A"), await dialog()], [[160, 220], 0]);
+eq("Shift+ドラッグでは選択は変わらない", await picked(), []);
+
+// 選択中の付箋をつかむと、選択全体が同じだけ動く
+await shiftClick(nA.locator("textarea"));
+await shiftClick(pg.locator('[data-note="D"] textarea'));
+eq("前提: A と D を選んだ", await picked(), ["A", "D"]);
+await drag(await centerOf(nA.locator("textarea")), -25, 80); // D は画面の下の端に近く、つかむと自動スクロールが始まるので A で
+eq("選択中の A をつかんで下へ: A と D が真下に 80 動く", [await pos("A"), await pos("D")], [[160, 300], [100, 730]]);
+eq("選択は A と D のまま", await picked(), ["A", "D"]);
+
+// 中の付箋 C をつかむと、C が B の中で真横に動く（B は動かない・選択も変わらない）
+await drag(await centerOf(nC.locator("textarea")), 60, 15);
+eq("中の付箋 C を右へ: C だけ真横に 60 動く", [await pos("C"), await pos("B")], [[70, 10], [450, 100]]);
+eq("選択は A と D のまま（C・B は入らない）", await picked(), ["A", "D"]);
+
+// 手ぶれ（2px）では動かず、選択に足す・外すだけ
+{
+  const c = await centerOf(nB.getByText("#2", { exact: true }));
+  await pg.mouse.move(c.x, c.y); await pg.keyboard.down("Shift"); await pg.mouse.down();
+  await pg.mouse.move(c.x + 2, c.y + 1); await pg.mouse.up(); await pg.keyboard.up("Shift");
+  await pg.waitForTimeout(200);
+  eq("Shift+クリックの手ぶれ（2px）: B は動かず、選択に入る", [await pos("B"), await picked()], [[450, 100], ["A", "B", "D"]]);
+}
+await pg.getByRole("button", { name: "解除" }).click();
+await pg.waitForTimeout(200);
+
+// ドラッグの途中で Shift を押す（つかみ代の番号から普通にドラッグを始める。A は (160, 300)）
+const onScreen = (id) => pg.evaluate((id) => { const r = document.querySelector(`[data-note="${id}"]`).getBoundingClientRect(), o = document.querySelector("[data-origin]").getBoundingClientRect(); return [Math.round(r.left - o.left), Math.round(r.top - o.top)]; }, id);
+{
+  const c = await centerOf(nA.getByText("#1", { exact: true }));
+  await pg.mouse.move(c.x, c.y); await pg.mouse.down();
+  await pg.mouse.move(c.x + 60, c.y + 50, { steps: 6 });
+  await pg.waitForTimeout(100);
+  eq("Shift なしの間は斜めにも動く", await onScreen("A"), [220, 350]);
+  await pg.keyboard.down("Shift");
+  await pg.waitForTimeout(100);
+  eq("途中で Shift を押すと（ポインタを動かさなくても）真横に戻る", await onScreen("A"), [220, 300]);
+  await pg.mouse.move(c.x + 80, c.y + 200, { steps: 6 });
+  await pg.mouse.up(); await pg.keyboard.up("Shift");
+  eq("そのまま下へ動かすと真縦（縦が大きくなったので向きが変わる）", await pos("A"), [160, 500]);
+}
+
+// グリッド配置: 動かす向きは目盛りに合わせ、固定した向きは元のまま（目盛りに合わせると元の位置からずれる）
+await pg.evaluate(() => {
+  const k = "idea-board-index", idx = JSON.parse(localStorage.getItem(k));
+  localStorage.setItem(k, JSON.stringify({ ...idx, gridMode: true }));
+  const pk = "idea-board-project:PA", p = JSON.parse(localStorage.getItem(pk));
+  p.boards[0].notes.find((n) => n.id === "A").x = 101; // 目盛り（26）に乗っていない位置
+  localStorage.setItem(pk, JSON.stringify(p));
+});
+await pg.reload(); await pg.waitForTimeout(1500);
+eq("前提: グリッド配置で A は (101, 500)", await pos("A"), [101, 500]);
+await drag(await centerOf(nA.locator("textarea")), 15, 100);
+eq("グリッド配置で真下へ: y は目盛り（26 の倍数）、x は 101 のまま", await pos("A"), [101, Math.round((500 + 100) / 26) * 26]);
 
 console.log(ng ? `shift-select: ${ng} 件 期待と違います` : "shift-select: すべて期待どおりです");
 await browser.close();

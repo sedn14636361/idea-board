@@ -6,8 +6,10 @@
 // items: [{ id, x, y, w, h }]（w, h は今見えている大きさ。開いている付箋は開いた大きさ）
 // 戻り値: { id: { x, y } }。起点（いちばん左上 = x+y が最小）は動かない。
 // 順番は今の位置の読み順（上の行から、行の中は左から）。起点は先頭。
-// 列の数は √枚数 の切り上げ。列の幅・行の高さはその列・行でいちばん大きい付箋に合わせるので、縁がそろい重ならない。
-// 付箋どうしの縁のすき間はすべて gap。
+// 列の数は √枚数 の切り上げ。i 番目は i % 列数 の列に入る。
+// 各列の左端はそろえ、列の幅はその列でいちばん広い付箋に合わせる（左右のすき間は、その列の最も広い付箋から gap）。
+// 列の中は上から詰める: 真上の付箋の下の縁から gap（6.11.0。以前は行の高さを行でいちばん高い付箋に合わせており、
+// 低い付箋の下が大きく空いていた）。行の上端はそろわないが、上下のすき間はすべて gap で、重ならない。
 export function tidyGrid(items, gap = 24) {
   if (items.length === 0) return {};
   const anchor = items.reduce((a, b) => {
@@ -26,18 +28,17 @@ export function tidyGrid(items, gap = 24) {
 
   const n = order.length;
   const cols = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / cols);
-  const colW = Array(cols).fill(0), rowH = Array(rows).fill(0);
-  order.forEach((it, i) => {
-    const c = i % cols, r = Math.floor(i / cols);
-    colW[c] = Math.max(colW[c], it.w);
-    rowH[r] = Math.max(rowH[r], it.h);
-  });
-  const colX = [], rowY = [];
+  const colW = Array(cols).fill(0);
+  order.forEach((it, i) => { colW[i % cols] = Math.max(colW[i % cols], it.w); });
+  const colX = [];
   for (let c = 0, x = anchor.x; c < cols; c++) { colX.push(x); x += colW[c] + gap; }
-  for (let r = 0, y = anchor.y; r < rows; r++) { rowY.push(y); y += rowH[r] + gap; }
+  const nextY = Array(cols).fill(anchor.y); // 各列で次の付箋を置く上端
   const out = {};
-  order.forEach((it, i) => { out[it.id] = { x: colX[i % cols], y: rowY[Math.floor(i / cols)] }; });
+  order.forEach((it, i) => {
+    const c = i % cols;
+    out[it.id] = { x: colX[c], y: nextY[c] };
+    nextY[c] += it.h + gap;
+  });
   return out;
 }
 

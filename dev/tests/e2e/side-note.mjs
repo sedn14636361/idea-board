@@ -35,7 +35,14 @@ const saved = async () => {
 };
 const known = new Set(A.boards[0].notes.map((n) => n.id));
 const fresh = (b) => b.notes.filter((n) => !known.has(n.id));
-const side = (id) => pg.locator(`[data-note="${id}"] [data-sidenote]`).first().click();
+// 幅が狭くてボタンを「⋯」にしまっている付箋（6.11.0）は、メニューの「右に付箋を作る」から
+const side = async (id) => {
+  const bar = pg.locator(`[data-note="${id}"] > div:first-child`);
+  if (await bar.locator('button[title="ほかの操作"]').count()) {
+    await bar.locator('button[title="ほかの操作"]').click();
+    await bar.locator('[data-toolitem="side"]').click();
+  } else await bar.locator("[data-sidenote]").click();
+};
 
 // 1) わかば（タグ付き）から作る
 await side("n2");
