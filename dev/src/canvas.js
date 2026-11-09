@@ -20,7 +20,7 @@ export function contentBox(board) {
     if (n.parentId) continue; // 中の付箋は親の中に収まる
     add(n.x, n.y, n.expanded ? n.ew || 430 : n.w || 190, n.expanded ? n.eh || 400 : n.h || 170);
   }
-  for (const t of board?.texts || []) add(t.x, t.y, 240, 60);
+  for (const t of board?.texts || []) add(t.x, t.y, Math.max(240, t.w || 0), 60); // 幅を決めた文字（6.13.0）はその幅
   for (const z of board?.zones || []) add(z.x, z.y, z.w || 0, z.h || 0);
   for (const im of board?.images || []) add(im.x, im.y, im.w || 0, im.h || 0);
   for (const s of board?.strokes || []) for (const p of s.pts || []) add(p.x, p.y);

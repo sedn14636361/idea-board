@@ -1912,7 +1912,7 @@ export default function IdeaBoard() {
 
   // どこかを押すたびに、直書きの文字の道具（A・⠿・✕）を押したかを覚える（入力欄から離れる前に走る）
   useEffect(() => {
-    const f = (e) => { textToolRef.current = e.target?.closest?.(".btext-tools")?.parentElement?.dataset?.text || null; };
+    const f = (e) => { textToolRef.current = e.target?.closest?.(".btext-tools, .btext-resize")?.closest?.("[data-text]")?.dataset?.text || null; };
     window.addEventListener("pointerdown", f, true);
     return () => window.removeEventListener("pointerdown", f, true);
   }, []);
@@ -1973,6 +1973,61 @@ export default function IdeaBoard() {
   };
 
   const onTextDragUp = () => { const d = textDragRef.current; textDragRef.current = null; if (d) refocusIfBlank(d.id); };
+
+  // ---- 直書きの文字の大きさ（6.13.0）----
+  // ふだんは書いたことがすべて入る大きさ: 幅は一番長い行の実際の幅（TEXT_MAX_W まで。超えたら折り返す）、
+  // 高さは折り返しも含めた全部の行。角で幅を決めたら（t.w）その幅で折り返し、高さは同じく中身に合わせる
+  const TEXT_MAX_W = 640, TEXT_MIN_W = 48;
+  const measureRef = useRef(null);
+  const lineWidth = (ta, lines) => {
+    let m = measureRef.current;
+    if (!m) {
+      m = measureRef.current = document.createElement("span");
+      Object.assign(m.style, { position: "absolute", left: "-99999px", top: "0", visibility: "hidden", whiteSpace: "pre", pointerEvents: "none" });
+      document.body.appendChild(m);
+    }
+    const cs = getComputedStyle(ta);
+    Object.assign(m.style, { fontFamily: cs.fontFamily, fontSize: cs.fontSize, fontWeight: cs.fontWeight, fontStyle: cs.fontStyle, letterSpacing: cs.letterSpacing });
+    let w = 0;
+    for (const l of lines) { m.textContent = l || " "; w = Math.max(w, m.getBoundingClientRect().width); }
+    return w;
+  };
+  const fitTextArea = (ta) => {
+    const cs = getComputedStyle(ta);
+    const n = (k) => parseFloat(cs[k]) || 0;
+    const sideX = n("paddingLeft") + n("paddingRight") + n("borderLeftWidth") + n("borderRightWidth");
+    const manual = parseFloat(ta.dataset.w);
+    const caret = Math.ceil(n("fontSize") * 0.3); // 行末のカーソルのぶん
+    const w = manual > 0 ? manual : Math.min(TEXT_MAX_W, Math.ceil(lineWidth(ta, (ta.value || ta.placeholder).split("\n"))) + caret) + sideX;
+    ta.style.width = w + "px";
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + n("borderTopWidth") + n("borderBottomWidth") + "px";
+  };
+  const fitAllTexts = () => document.querySelectorAll("[data-text] > textarea").forEach(fitTextArea);
+  useLayoutEffect(fitAllTexts);
+  useEffect(() => { document.fonts?.ready?.then(() => fitAllTexts()); }, []); // 字体が後から読み込まれて幅が変わるため
+
+  const textResizeRef = useRef(null);
+  const onTextResizeDown = (e, t) => {
+    e.stopPropagation();
+    const ta = e.currentTarget.parentElement.querySelector("textarea");
+    textResizeRef.current = { id: t.id, startX: e.clientX, origW: ta.offsetWidth };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onTextResizeMove = (e) => {
+    const r = textResizeRef.current;
+    if (!r) return;
+    const zf = zoomRef.current || 1;
+    let w = Math.max(TEXT_MIN_W, Math.round(r.origW + (e.clientX - r.startX) / zf));
+    if (gridRef.current) w = Math.max(TEXT_MIN_W, snap(w));
+    updateText(r.id, { w });
+  };
+  const onTextResizeUp = () => { const r = textResizeRef.current; textResizeRef.current = null; if (r) refocusIfBlank(r.id); };
+  // 角のダブルクリック: 決めた幅をやめて、中身に合わせる
+  const autoTextWidth = (id) => {
+    setTexts((ts) => ts.map((t) => { if (t.id !== id || t.w == null) return t; const { w, ...rest } = t; return rest; }));
+    refocusIfBlank(id);
+  };
 
   const addNoteCenter = () => {
     const sc = scrollerRef.current;
@@ -4156,13 +4211,13 @@ export default function IdeaBoard() {
         button, input, select, textarea { -webkit-app-region: no-drag }
         .board-tabs::-webkit-scrollbar { height: 5px }
         .board-tabs::-webkit-scrollbar-thumb { background: #6B665C; border-radius: 3px }
-        .btext .btext-tools { opacity: 0; transition: opacity .12s ease }
-        .btext:hover .btext-tools, .btext:focus-within .btext-tools { opacity: 1 }
+        .btext .btext-tools, .btext .btext-resize { opacity: 0; transition: opacity .12s ease }
+        .btext:hover .btext-tools, .btext:focus-within .btext-tools, .btext:hover .btext-resize, .btext:focus-within .btext-resize { opacity: 1 }
         .btext textarea { border: 1px dashed transparent; border-radius: 4px }
         .btext:hover textarea, .btext textarea:focus { border-color: rgba(62,58,51,.35) }
         /* タッチ端末ではホバーできないので常に操作UIを表示 */
         @media (hover: none) {
-          .btext .btext-tools { opacity: .85 }
+          .btext .btext-tools, .btext .btext-resize { opacity: .85 }
           .btext textarea { border-color: rgba(62,58,51,.25) }
         }
         /* タッチのタップ遅延・意図しない拡大を防ぐ */
@@ -5760,8 +5815,6 @@ export default function IdeaBoard() {
           {/* ボード直書きの文字 */}
           {texts.map((t) => {
             const fs = TEXT_SIZES[t.size ?? 1] || TEXT_SIZES[1];
-            const lines = (t.text || "").split("\n");
-            const wCh = Math.max(4, ...lines.map((l) => l.length)) + 2;
             return (
               <div
                 key={t.id}
@@ -5811,19 +5864,35 @@ export default function IdeaBoard() {
                     ✕
                   </button>
                 </div>
+                {/* 幅と高さは fitTextArea が中身から決める（6.13.0）。t.w があればその幅で折り返す */}
                 <textarea
                   value={t.text}
-                  rows={Math.max(1, lines.length)}
+                  rows={1}
+                  data-w={t.w || ""}
                   placeholder="文字を入力"
                   onChange={(e) => updateText(t.id, { text: e.target.value })}
                   onBlur={(e) => onTextBlur(e, t.id)}
                   style={{
                     display: "block",
                     fontSize: fs, lineHeight: 1.5,
-                    width: `${wCh}em`, maxWidth: 640,
-                    background: "transparent", resize: "none",
+                    background: "transparent", resize: "none", overflow: "hidden",
                     fontFamily: "inherit", fontWeight: 700, color: "#3E3A33",
-                    padding: "1px 4px", boxSizing: "content-box",
+                    padding: "1px 4px", boxSizing: "border-box",
+                  }}
+                />
+                {/* 右下の角: 引っぱると幅を決める（高さは常に中身に合わせる）。ダブルクリックで中身に合わせた幅に戻す */}
+                <div
+                  className="btext-resize"
+                  data-textresize
+                  title="ドラッグで幅を変える（ダブルクリックで元に戻す）"
+                  onPointerDown={(e) => onTextResizeDown(e, t)}
+                  onPointerMove={onTextResizeMove}
+                  onPointerUp={onTextResizeUp}
+                  onDoubleClick={() => autoTextWidth(t.id)}
+                  style={{
+                    position: "absolute", right: -5, bottom: -5, width: 11, height: 11,
+                    cursor: "ew-resize", touchAction: "none", borderRadius: 3,
+                    background: "rgba(62,58,51,.85)", border: "2px solid #F6F2E9", boxSizing: "border-box",
                   }}
                 />
               </div>
