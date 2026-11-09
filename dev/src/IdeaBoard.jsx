@@ -2453,17 +2453,39 @@ export default function IdeaBoard() {
     );
   };
 
+  // ---- Shift+クリックで選択に足す・外す（6.10.1） ----
+  // 最上位の付箋の外枠で、内側の要素より先に（capture で）受け取る。本文・タイトル・タグの行・ボタン・
+  // 大きさを変える角・開いた付箋の中・中の付箋のどこを押しても、その最上位の付箋を足す・外すだけにする。
+  // 開いている色・タグ・引用・コピーのメニュー（data-notepop）の中は対象外
+  const shiftPickRef = useRef(null); // 直前に Shift で足し引きした付箋。続くクリックを握りつぶすため
+  const isShiftPick = (e) => e.shiftKey && e.button === 0 && !e.target.closest("[data-notepop]");
+  const onNoteShiftPointerDown = (e, note) => {
+    shiftPickRef.current = null;
+    if (!isShiftPick(e)) return;
+    e.stopPropagation(); // 中の要素（ドラッグ・大きさ変更・中の付箋）へ渡さない
+    shiftPickRef.current = note.id;
+    setSelectedIds((ids) => (ids.includes(note.id) ? ids.filter((i) => i !== note.id) : [...ids, note.id]));
+  };
+  // 文字カーソル・文字の範囲選択といった既定の動きを止める（pointerdown を止めると mousedown が来なくなるのでこちらで）
+  const onNoteShiftMouseDown = (e) => {
+    if (!isShiftPick(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  // Shift で押したあとのクリック・ダブルクリックは、ボタンや「中に付箋を貼る」に渡さない
+  const onNoteShiftClick = (e, note) => {
+    if (e.type === "click" ? shiftPickRef.current !== note.id : !isShiftPick(e)) return;
+    if (e.type === "click") shiftPickRef.current = null;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   // ---- ドラッグ ----
   const onNotePointerDown = (e, note, depth) => {
     // 自分の中の操作UIだけを除外する（親のミニボードのdata-nodragに巻き込まれないように）
     const nd = e.target.closest("[data-nodrag]");
     if (nd && e.currentTarget.contains(nd)) return;
     e.stopPropagation();
-    // Shift+クリックで選択に追加/除外（最上位の付箋のみ）
-    if (e.shiftKey && depth === 0) {
-      setSelectedIds((ids) => (ids.includes(note.id) ? ids.filter((i) => i !== note.id) : [...ids, note.id]));
-      return;
-    }
     setColorMenuFor(null);
     setTagMenuFor(null);
     setQuoteMenuFor(null);
@@ -3192,6 +3214,10 @@ export default function IdeaBoard() {
         }}
         className="note-enter"
         data-note={n.id}
+        onPointerDownCapture={depth === 0 ? (e) => onNoteShiftPointerDown(e, n) : undefined}
+        onMouseDownCapture={depth === 0 ? onNoteShiftMouseDown : undefined}
+        onClickCapture={depth === 0 ? (e) => onNoteShiftClick(e, n) : undefined}
+        onDoubleClickCapture={depth === 0 ? (e) => onNoteShiftClick(e, n) : undefined}
         onPointerDown={(e) => onNotePointerDown(e, n, depth)}
         onPointerMove={onNotePointerMove}
         onPointerUp={(e) => onNotePointerUp(e, n.id)}
@@ -3249,6 +3275,7 @@ export default function IdeaBoard() {
             <div
               data-nodrag
               data-colormenu
+              data-notepop
               style={{
                 position: "absolute", top: 22, left: 4, zIndex: 100001,
                 background: "#FFFDF6", borderRadius: 8,
@@ -3314,6 +3341,7 @@ export default function IdeaBoard() {
             <div
               data-nodrag
               data-copymenu
+              data-notepop
               style={{
                 position: "absolute", top: 22, right: 4, zIndex: 100001,
                 background: "#FFFDF6", borderRadius: 8,
@@ -3596,6 +3624,7 @@ export default function IdeaBoard() {
           {tagMenuFor === n.id && (
             <div
               data-tagmenu
+              data-notepop
               style={{
                 position: "absolute", bottom: 24, left: 4, zIndex: 100001,
                 background: "#FFFDF6", borderRadius: 8,
@@ -3686,6 +3715,7 @@ export default function IdeaBoard() {
           {quoteMenuFor === n.id && (
             <div
               data-quotemenu
+              data-notepop
               style={{
                 position: "absolute", bottom: 24, left: 4, zIndex: 100001,
                 background: "#FFFDF6", borderRadius: 8,

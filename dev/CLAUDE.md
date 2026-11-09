@@ -118,7 +118,7 @@
 - クラウド設定の保存: loadCloudConf/saveCloudConf に加えて loadCloudDraft/saveCloudDraft（入力途中の控え）を用意。**読み込みは他の初期化処理と分けた独立の useEffect** で行う（まとめて読むと、途中で例外が出たときに設定だけ復元されない事故になる）。saveCloudConf は保存可否を返し、失敗時はその旨を画面に出す
 - 注意: Safari で開いた場合とホーム画面アプリとして開いた場合で、保存先が別になることがある。設定は開き方ごとに1回ずつ必要になる場合がある（「設定をコピー」「設定を貼り付け」で移せる）
 - スマホ版の「まとめ先」(AREAS_KEY): 付箋ごとに指定できる区分。名前と色を持ち、送信時に area / areaColor として渡す。PC側の placeIncoming は **area を最優先**（無ければタグのカテゴリ）でグループ化し、その色で領域(zone)を作る
-- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.10.0。設定画面（PC）と⚙（スマホ）に表示される
+- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.10.1。設定画面（PC）と⚙（スマホ）に表示される
 - スマホ版の一覧: チェックで選択 → 共有・CSV出力・削除・PCへ送信は「選んだものだけ」（未選択なら全部）。↑↓で並び替えでき、**その順番のままPCに取り込まれる**（items は上から古い順で保持し、追加は末尾に足す）
 - スマホ版の「データでコピー」は廃止し CSV 出力に置き換え（BOM付き・引用符エスケープ。navigator.share のファイル共有を優先、不可ならダウンロード、それも不可ならコピー）
 - **ホーム画面アプリ（standalone）ではクラウド同期を出さない**: iOSのPWAは設定を保持できないことがあるため。判定は display-mode:standalone / navigator.standalone。CSVや共有での受け渡しを案内する
@@ -328,6 +328,13 @@
   - 「新しい版があることを知らせて、押したら読み込み直す」は web.dev / Workbox が勧める一般的な形
 - 変更箇所のスクリーンショットを報告に添える決まりを追加（上の「設定画面」の節）。`mobile-update.mjs` のサーバーと「次の版」作りは `pages.mjs` に切り出した
 - 試験: 実ブラウザ `mobile-update.mjs`（GitHub Pages と同じ max-age=600 で返すサーバー。今の dist から版の文字とファイル名だけ変えた「次の版」を作って公開し直し、開き直さずに知らせが出る・直している間は出ない・切り替えで新しい版になり書きかけが残る・切り替え後に電波なしで開ける、を確認）。**6.4.0 の build にかけると知らせが出ず NG になる**ことも確認
+
+## 6.10.1 での変更
+- **Shift+クリックは付箋の上のどこを押しても選択に足す・外す**（ユーザー要望。中の付箋を押したら外側の最上位の付箋を足す・外すのはユーザーが選択）
+  - 6.10.0 までは `onNotePointerDown` の先頭で `data-nodrag` の場所を除外していたため、本文・タイトル・タグの行・ボタン・右下の角・開いた付箋の中では Shift が効かなかった（ボタンは押したことになり、✕ では剥がす確認が出た）
+  - 最上位の付箋の外枠に capture の処理を付けた（`onNoteShiftPointerDown` / `onNoteShiftMouseDown` / `onNoteShiftClick`）。pointerdown で足し引きして中へ渡さない（ドラッグ・大きさ変更・中の付箋）。mousedown の既定の動き（文字カーソル・文字の範囲選択）を止める（**pointerdown を preventDefault すると mousedown が来なくなるので、止めるのは mousedown の方**）。続く click / dblclick も中へ渡さない（ボタン・「中に付箋を貼る」）
+  - 開いているメニュー（色・タグ・引用・コピー）の本体には `data-notepop` を付けて除外する。**メニューを開くボタンとメニュー本体は同じ目印（`data-colormenu` など）を持つので、それでは区別できない**。付箋の中に新しいポップオーバーを足すときは `data-notepop` を付けること
+  - 試験 e2e `shift-select`（A の本文・タイトル・タグ・引用・✕・色・⧉・＋→・右下の角・番号、B の開いた中・中の付箋、Shift+ダブルクリック、色のメニューの中、Shift なし）。変更前の版では NG になることを確認
 
 ## 6.10.0 での変更
 - **選んだ付箋の一括操作**（ユーザー要望「属性の一括変更（色やタグなど）・ノードの整列（左上の付箋を起点に等間隔）・選んだ付箋を全て含む領域」。属性はタグと色、整列は格子だけ、はユーザーが選択）。計算は `src/arrange.js`（純粋な関数・単体試験 `arrange.test.mjs`）
