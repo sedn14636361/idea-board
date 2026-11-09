@@ -50,6 +50,7 @@ const all = [
   ["text-size", "text-size.mjs", { BASE }],                          // 直書きの文字は中身が全部入る大きさ・角で幅を決める
   ["multi-grab", "multi-grab.mjs", { BASE }],                        // 2つ以上選んでいるときは、選んだ付箋のどこをつかんでも動かせる
   ["shift-repeat", "shift-repeat.mjs", { BASE }],                    // Shift を押し続けた（キーの自動の繰り返し）まま動かしても落ちない
+  ["edge-toggle", "edge-toggle.mjs", { BASE }],                      // つないである付箋どうしでもう一度つなぐと線を外す
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);

@@ -2853,10 +2853,12 @@ export default function IdeaBoard() {
         setConnectFrom(null);
         return;
       }
-      const exists = edges.some(
-        (ed) => (ed.from === connectFrom && ed.to === id) || (ed.from === id && ed.to === connectFrom)
-      );
-      if (!exists) setEdges((es) => [...es, { id: nextId(), from: connectFrom, to: id }]);
+      // すでにつないである相手なら、その線を外す（どちら向きに引いた線でも。メモも一緒に。確かめずに外し、Ctrl+Z で戻せる。6.15.0）
+      const linked = (ed) => (ed.from === connectFrom && ed.to === id) || (ed.from === id && ed.to === connectFrom);
+      if (edges.some(linked)) {
+        setEdges((es) => es.filter((ed) => !linked(ed)));
+        if (edgeMenu && edges.some((ed) => linked(ed) && ed.id === edgeMenu.id)) setEdgeMenu(null);
+      } else setEdges((es) => [...es, { id: nextId(), from: connectFrom, to: id }]);
       setConnectFrom(null);
     }
   };
