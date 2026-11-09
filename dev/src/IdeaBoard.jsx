@@ -287,6 +287,7 @@ export default function IdeaBoard() {
   const [showAllTags, setShowAllTags] = useState({}); // 付箋ごとのタグ展開状態(非保存)
   const [loaded, setLoaded] = useState(false);
   const [centers, setCenters] = useState({});
+  const centersRef = useRef({}); // 最後に setCenters した値（変わっていなければ呼ばないため）
   const zRef = useRef(10);
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
@@ -628,22 +629,24 @@ export default function IdeaBoard() {
         hh: r.height / 2 / zf,
       };
     }
-    setCenters((prev) => {
-      const keys = Object.keys(next);
-      if (
-        keys.length === Object.keys(prev).length &&
-        keys.every(
-          (k) =>
-            prev[k] &&
-            Math.abs(prev[k].cx - next[k].cx) < 0.5 &&
-            Math.abs(prev[k].cy - next[k].cy) < 0.5 &&
-            Math.abs(prev[k].hw - next[k].hw) < 0.5 &&
-            Math.abs(prev[k].hh - next[k].hh) < 0.5
-        )
-      )
-        return prev;
-      return next;
-    });
+    // 変わっていなければ setCenters を呼ばない（6.14.1）。関数で渡して prev を返しても、ほかの更新が待っていると
+    // React は描き直しを予約する。Windows で Shift を押し続けたまま付箋を動かすと（キーの自動の繰り返しで、
+    // 優先度の高い更新と低い更新が交互に入り）この描き直しが止まらず「Maximum update depth exceeded」になっていた
+    const prev = centersRef.current;
+    const keys = Object.keys(next);
+    const same =
+      keys.length === Object.keys(prev).length &&
+      keys.every(
+        (k) =>
+          prev[k] &&
+          Math.abs(prev[k].cx - next[k].cx) < 0.5 &&
+          Math.abs(prev[k].cy - next[k].cy) < 0.5 &&
+          Math.abs(prev[k].hw - next[k].hw) < 0.5 &&
+          Math.abs(prev[k].hh - next[k].hh) < 0.5
+      );
+    if (same) return;
+    centersRef.current = next;
+    setCenters(next);
   });
 
   const noteMap = Object.fromEntries(notes.map((n) => [n.id, n]));
@@ -2359,11 +2362,15 @@ export default function IdeaBoard() {
   const seenRef = useRef({});   // pid → 最後に見た { boards, currentBoardId }
   const gestureRef = useRef({ down: false, boundary: false }); // 押している間は1手。押し始め・キー操作で次の手
   const [histFlags, setHistFlags] = useState({ u: false, r: false });
+  const histFlagsRef = useRef(histFlags);
   const curSnap = () => (project ? { boards: project.boards, currentBoardId: project.currentBoardId } : null);
   const refreshHistFlags = () => {
     const cur = curSnap(), h = project && histRef.current[project.id];
     const u = !!cur && canUndo(h, cur), r = !!cur && canRedo(h, cur);
-    setHistFlags((f) => (f.u === u && f.r === r ? f : { u, r }));
+    // 同じなら呼ばない（6.14.1。centers と同じ理由で、関数で同じ値を返しても描き直しが予約されることがある）
+    if (histFlagsRef.current.u === u && histFlagsRef.current.r === r) return;
+    histFlagsRef.current = { u, r };
+    setHistFlags(histFlagsRef.current);
   };
   useEffect(() => {
     if (!project) return;
@@ -2805,7 +2812,8 @@ export default function IdeaBoard() {
   const zoneResizeMoveRef = useRef(null);
   useEffect(() => {
     const f = (e) => {
-      if (e.key !== "Shift") return;
+      // Shift を押した・離した瞬間だけ（押し続けたときのキーの自動の繰り返しは数えない。6.14.1）
+      if (e.key !== "Shift" || e.repeat) return;
       const shiftKey = e.type === "keydown";
       const d = dragRef.current;
       if (d?.lastClient) noteMoveRef.current({ ...d.lastClient, shiftKey });
@@ -2845,10 +2853,12 @@ export default function IdeaBoard() {
         setConnectFrom(null);
         return;
       }
-      const exists = edges.some(
-        (ed) => (ed.from === connectFrom && ed.to === id) || (ed.from === id && ed.to === connectFrom)
-      );
-      if (!exists) setEdges((es) => [...es, { id: nextId(), from: connectFrom, to: id }]);
+      // すでにつないである相手なら、その線を外す（どちら向きに引いた線でも。メモも一緒に。確かめずに外し、Ctrl+Z で戻せる。6.15.0）
+      const linked = (ed) => (ed.from === connectFrom && ed.to === id) || (ed.from === id && ed.to === connectFrom);
+      if (edges.some(linked)) {
+        setEdges((es) => es.filter((ed) => !linked(ed)));
+        if (edgeMenu && edges.some((ed) => linked(ed) && ed.id === edgeMenu.id)) setEdgeMenu(null);
+      } else setEdges((es) => [...es, { id: nextId(), from: connectFrom, to: id }]);
       setConnectFrom(null);
     }
   };
