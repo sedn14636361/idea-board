@@ -7,7 +7,7 @@ import {
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
-import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow } from "./history.js";
+import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, rewriteHist, withoutBlankText, isBlankText } from "./history.js";
 import { tidyGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
 import { incomingPlan, noteContentHash } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
@@ -374,6 +374,8 @@ export default function IdeaBoard() {
     setProjects((ps) => ps.map((p) => (p.id === currentProjectId ? fn(p) : p)));
   // 利用者の操作でボードを書き換えた印（元に戻すの履歴に積む。印の無い書き換え＝他の端末の版などは履歴を消す）
   const editMarkRef = useRef(null);
+  const blankDropRef = useRef(null); // 空のまま離れた文字を消した印（{ pid, id }。履歴の effect が読む）
+  const textToolRef = useRef(null);  // 直書きの文字の「A」「⠿」を押した（その文字の id）。そのときは空でも消さない
   const markEdit = () => { editMarkRef.current = { pid: currentProjectId, at: Date.now() }; };
   const setBoards = (fn) => {
     markEdit();
@@ -1869,6 +1871,30 @@ export default function IdeaBoard() {
     setSelectedTextIds((ids) => ids.filter((i) => i !== id));
   };
 
+  // 空のまま入力欄から離れた直書きの文字を消す（6.11.1。空白・改行だけも空）。
+  // 利用者の操作の印（markEdit）は付けず、blankDropRef で履歴の effect に知らせる（履歴の控えからも外す）
+  const dropBlankText = (id) => {
+    const pid = currentProjectId;
+    setProjects((ps) => ps.map((p) => {
+      if (p.id !== pid) return p;
+      if (!p.boards.some((b) => (b.texts || []).some((t) => t.id === id && isBlankText(t)))) return p;
+      blankDropRef.current = { pid, id };
+      return { ...p, boards: p.boards.map((b) => ((b.texts || []).some((t) => t.id === id) ? { ...b, texts: b.texts.filter((t) => !(t.id === id && isBlankText(t))) } : b)) };
+    }));
+    setSelectedTextIds((ids) => ids.filter((i) => i !== id));
+  };
+  // 入力欄から離れたとき: 自分の「A」「⠿」を押したとき（textToolRef）と、別のウィンドウへ切り替えたとき
+  // （カーソルは入力欄に残る）は消さない
+  const onTextBlur = (e, id) => {
+    const ta = e.currentTarget;
+    if (textToolRef.current === id) return;
+    setTimeout(() => { if (document.activeElement !== ta) dropBlankText(id); }, 0);
+  };
+  const refocusIfBlank = (id) => {
+    const t = texts.find((x) => x.id === id);
+    if (t && isBlankText(t)) focusNew(() => document.querySelector(`[data-text="${id}"]`));
+  };
+
   const addTextCenter = () => {
     const sc = scrollerRef.current;
     const zf = zoom || 1;
@@ -1883,6 +1909,13 @@ export default function IdeaBoard() {
     setTexts((ts) => [...ts, { id, x, y, text: "", size: 1, z: zRef.current }]);
     focusNew(() => document.querySelector(`[data-text="${id}"]`));
   };
+
+  // どこかを押すたびに、直書きの文字の道具（A・⠿・✕）を押したかを覚える（入力欄から離れる前に走る）
+  useEffect(() => {
+    const f = (e) => { textToolRef.current = e.target?.closest?.(".btext-tools")?.parentElement?.dataset?.text || null; };
+    window.addEventListener("pointerdown", f, true);
+    return () => window.removeEventListener("pointerdown", f, true);
+  }, []);
 
   const onTextDragDown = (e, t) => {
     e.stopPropagation();
@@ -1939,7 +1972,7 @@ export default function IdeaBoard() {
     updateText(d.id, { x: nx, y: ny });
   };
 
-  const onTextDragUp = () => { textDragRef.current = null; };
+  const onTextDragUp = () => { const d = textDragRef.current; textDragRef.current = null; if (d) refocusIfBlank(d.id); };
 
   const addNoteCenter = () => {
     const sc = scrollerRef.current;
@@ -2285,13 +2318,22 @@ export default function IdeaBoard() {
     seenRef.current[pid] = cur;
     const mark = editMarkRef.current;
     editMarkRef.current = null;
+    const forget = blankDropRef.current;
+    blankDropRef.current = null;
     if (seen && seen.boards !== cur.boards) {
-      if (mark && mark.pid === pid && Date.now() - mark.at < 1000) {
+      const marked = mark && mark.pid === pid && Date.now() - mark.at < 1000;
+      const dropped = forget && forget.pid === pid;
+      if (marked) {
         const h = (histRef.current[pid] ||= makeHist());
         const g = gestureRef.current;
         recordChange(h, seen, Date.now(), { boundary: g.boundary, pointerDown: g.down });
         g.boundary = false;
-      } else {
+      }
+      if (dropped) {
+        // 空のまま離れた文字を消した（6.11.1）。履歴の控えからも外して、作った手ごと無かったことにする
+        // （書いてあった控えは残るので、書いてから全部消した文字は Ctrl+Z で戻せる）
+        rewriteHist(histRef.current[pid], withoutBlankText(forget.id), cur);
+      } else if (!marked) {
         // 利用者の操作ではない書き換え（他の端末の版の読み込み・復元ポイント）。前の状態へ戻すと上書きになるので履歴を消す
         delete histRef.current[pid];
       }
@@ -5714,7 +5756,7 @@ export default function IdeaBoard() {
                   </span>
                   <button
                     title="文字サイズを変える"
-                    onClick={() => updateText(t.id, { size: ((t.size ?? 1) + 1) % TEXT_SIZES.length })}
+                    onClick={() => { updateText(t.id, { size: ((t.size ?? 1) + 1) % TEXT_SIZES.length }); refocusIfBlank(t.id); }}
                     style={{
                       border: "none", background: "rgba(62,58,51,.85)", color: "#F6F2E9",
                       borderRadius: 4, fontSize: 11, padding: "1px 6px", cursor: "pointer", lineHeight: 1.4,
@@ -5724,7 +5766,7 @@ export default function IdeaBoard() {
                   </button>
                   <button
                     title="この文字を消す"
-                    onClick={() => removeText(t.id)}
+                    onClick={() => (isBlankText(t) ? dropBlankText(t.id) : removeText(t.id))}
                     style={{
                       border: "none", background: "rgba(176,72,60,.9)", color: "#FFFDF6",
                       borderRadius: 4, fontSize: 11, padding: "1px 6px", cursor: "pointer", lineHeight: 1.4,
@@ -5738,6 +5780,7 @@ export default function IdeaBoard() {
                   rows={Math.max(1, lines.length)}
                   placeholder="文字を入力"
                   onChange={(e) => updateText(t.id, { text: e.target.value })}
+                  onBlur={(e) => onTextBlur(e, t.id)}
                   style={{
                     display: "block",
                     fontSize: fs, lineHeight: 1.5,
