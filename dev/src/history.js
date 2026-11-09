@@ -120,3 +120,36 @@ export function boardToShow(snap, cur) {
   if (changed.length > 0) return changed[0];
   return has(curId) ? curId : (has(snap.currentBoardId) ? snap.currentBoardId : snap.boards[0]?.id);
 }
+
+// 控えの中身を f（boards → boards）で書き換える（6.11.1。空のまま離れた直書きの文字を、無かったことにするため）。
+// 書き換えて同じになった手（何も変わらない手）は捨てる。今の状態（cur）と同じになった一番上の手も捨てる
+// （残すと Ctrl+Z を押しても何も起きない）
+export function rewriteHist(h, f, cur) {
+  if (!h) return;
+  const fix = (s) => {
+    if (!s) return s;
+    const boards = f(s.boards);
+    return boards === s.boards ? s : { ...s, boards };
+  };
+  const dedupe = (list) => list.filter((s, i) => i === 0 || !sameBoards(s.boards, list[i - 1].boards));
+  h.undo = dedupe(h.undo.map(fix));
+  h.redo = dedupe(h.redo.map(fix));
+  h.open = fix(h.open);
+  if (h.open && sameBoards(h.open.boards, cur.boards)) h.open = null;
+  if (h.open && h.undo.length && sameBoards(h.undo[h.undo.length - 1].boards, h.open.boards)) h.undo.pop();
+  if (!h.open) while (h.undo.length && sameBoards(h.undo[h.undo.length - 1].boards, cur.boards)) h.undo.pop();
+  while (h.redo.length && sameBoards(h.redo[h.redo.length - 1].boards, cur.boards)) h.redo.pop();
+}
+
+// 文字 id が空（空白・改行だけを含む）の控えから、その文字を外す（書いてあった控えはそのまま）
+export const isBlankText = (t) => !(t?.text || "").trim();
+export const withoutBlankText = (id) => (boards) => {
+  let changed = false;
+  const out = boards.map((b) => {
+    const ts = b.texts || [];
+    if (!ts.some((t) => t.id === id && isBlankText(t))) return b;
+    changed = true;
+    return { ...b, texts: ts.filter((t) => !(t.id === id && isBlankText(t))) };
+  });
+  return changed ? out : boards;
+};
