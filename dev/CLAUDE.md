@@ -118,7 +118,7 @@
 - クラウド設定の保存: loadCloudConf/saveCloudConf に加えて loadCloudDraft/saveCloudDraft（入力途中の控え）を用意。**読み込みは他の初期化処理と分けた独立の useEffect** で行う（まとめて読むと、途中で例外が出たときに設定だけ復元されない事故になる）。saveCloudConf は保存可否を返し、失敗時はその旨を画面に出す
 - 注意: Safari で開いた場合とホーム画面アプリとして開いた場合で、保存先が別になることがある。設定は開き方ごとに1回ずつ必要になる場合がある（「設定をコピー」「設定を貼り付け」で移せる）
 - スマホ版の「まとめ先」(AREAS_KEY): 付箋ごとに指定できる区分。名前と色を持ち、送信時に area / areaColor として渡す。PC側の placeIncoming は **area を最優先**（無ければタグのカテゴリ）でグループ化し、その色で領域(zone)を作る
-- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.11.1。設定画面（PC）と⚙（スマホ）に表示される
+- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.12.0。設定画面（PC）と⚙（スマホ）に表示される
 - スマホ版の一覧: チェックで選択 → 共有・CSV出力・削除・PCへ送信は「選んだものだけ」（未選択なら全部）。↑↓で並び替えでき、**その順番のままPCに取り込まれる**（items は上から古い順で保持し、追加は末尾に足す）
 - スマホ版の「データでコピー」は廃止し CSV 出力に置き換え（BOM付き・引用符エスケープ。navigator.share のファイル共有を優先、不可ならダウンロード、それも不可ならコピー）
 - **ホーム画面アプリ（standalone）ではクラウド同期を出さない**: iOSのPWAは設定を保持できないことがあるため。判定は display-mode:standalone / navigator.standalone。CSVや共有での受け渡しを案内する
@@ -328,6 +328,16 @@
   - 「新しい版があることを知らせて、押したら読み込み直す」は web.dev / Workbox が勧める一般的な形
 - 変更箇所のスクリーンショットを報告に添える決まりを追加（上の「設定画面」の節）。`mobile-update.mjs` のサーバーと「次の版」作りは `pages.mjs` に切り出した
 - 試験: 実ブラウザ `mobile-update.mjs`（GitHub Pages と同じ max-age=600 で返すサーバー。今の dist から版の文字とファイル名だけ変えた「次の版」を作って公開し直し、開き直さずに知らせが出る・直している間は出ない・切り替えで新しい版になり書きかけが残る・切り替え後に電波なしで開ける、を確認）。**6.4.0 の build にかけると知らせが出ず NG になる**ことも確認
+
+## 6.12.0 での変更
+- **Shift+右下の角で、幅か高さの片方だけを変える**（ユーザー要望「縦/横の幅の片方を固定したまま拡大縮小」。付箋と領域が対象なのはユーザーが選択。画像は縦横比を保つので対象外）
+  - 6.11.0 では、Shift で付箋のどこを押しても `onNoteShiftPointerDown` がドラッグ（移動）を始めていたので、Shift+角は**動く**だけで大きさが変わらなかった
+  - 付箋の角に `data-resize`。`onNoteShiftPointerDown` は、押した場所がつかんだ付箋自身の角なら `startNoteResize(e, note, shiftPick, corner)`（角の要素でポインタを捕まえる。以後は角の `onResizeMove` / `onResizeUp`）。動かさずに離したら（|dx|+|dy| ≤ 3）今までどおり最上位の付箋を選択に足す・外す（`onResizeUp` の `r.shiftPick`）。手ぶれでは大きさを変えない
+  - `lockSize(e, r, min)` が、付箋（`onResizeMove`）と領域（`onZoneResizeMove`）共通で、`e.shiftKey` のとき |dx| と |dy| の大きい方だけを変える。**固定した方は目盛りに合わせない**（移動の `fixX/fixY` と同じ考え方）
+  - ドラッグ中に Shift を押す・離すと、6.11.0 の window の keydown/keyup から `resizeMoveRef` / `zoneResizeMoveRef` を呼んで切り替える（`lastClient` を覚えておく）
+  - Shift なしで角を引っぱったときは今までどおり（`onResizeDown` → `startNoteResize(e, note, null, ...)`）
+  - 試験 e2e `shift-resize`（付箋・開いた付箋・中の付箋・途中で Shift・最小の大きさ・Shift+クリックで選択・領域・Shift なし・グリッド配置）。角は `title` で探す（変更前の版には `data-resize` が無く、比べられないため）。変更前（6.11.1）の版では 16 件 NG
+  - 試験の注意: 付箋を広げて隣の付箋に重なると、角を押したつもりで隣の付箋を押す。画面の下の外に出た角は押せない
 
 ## 6.11.1 での変更
 - **直書きの文字は、空のまま入力欄から離れたら消す**（ユーザー要望「文字を作ったまま何も記述しなかったら自動で削除」。書いてから全部消した文字も消すのはユーザーが選択。Figma・Miro・PowerPoint と同じ）。空白・改行だけも空（`isBlankText`）

@@ -2532,10 +2532,9 @@ export default function IdeaBoard() {
   const onZoneResizeMove = (e) => {
     const r = zoneResizeRef.current;
     if (!r) return;
-    const zf = zoomRef.current || 1;
-    let w = Math.max(80, r.origW + (e.clientX - r.startX) / zf);
-    let h = Math.max(60, r.origH + (e.clientY - r.startY) / zf);
-    if (gridRef.current) { w = Math.max(GRID * 2, snap(w)); h = Math.max(GRID * 2, snap(h)); }
+    r.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
+    const min = gridRef.current ? { w: GRID * 2, h: GRID * 2 } : { w: 80, h: 60 };
+    const { w, h } = lockSize(e, r, min);
     updateZone(r.id, { w, h });
   };
   const onZoneResizeUp = () => { zoneResizeRef.current = null; };
@@ -2590,6 +2589,9 @@ export default function IdeaBoard() {
     shiftPickRef.current = note.id;
     const el = e.target.closest("[data-note]");
     const grab = (el && noteMap[el.dataset.note]) || note;
+    // 右下の角なら、動かさずに大きさを変える（幅か高さの片方だけ。6.12.0）
+    const corner = e.target.closest("[data-resize]");
+    if (corner && corner.closest("[data-note]") === el) { startNoteResize(e, grab, note.id, corner); return; }
     startNoteDrag(e, grab, depthOf(grab), note.id);
   };
   // 文字カーソル・文字の範囲選択といった既定の動きを止める（pointerdown を止めると mousedown が来なくなるのでこちらで）
@@ -2722,11 +2724,17 @@ export default function IdeaBoard() {
   // ドラッグ中に Shift を押した・離したときも、ポインタを動かさずに向きの固定を切り替える
   const noteMoveRef = useRef(null);
   noteMoveRef.current = onNotePointerMove;
+  const resizeMoveRef = useRef(null);
+  const zoneResizeMoveRef = useRef(null);
   useEffect(() => {
     const f = (e) => {
       if (e.key !== "Shift") return;
+      const shiftKey = e.type === "keydown";
       const d = dragRef.current;
-      if (d?.lastClient) noteMoveRef.current({ ...d.lastClient, shiftKey: e.type === "keydown" });
+      if (d?.lastClient) noteMoveRef.current({ ...d.lastClient, shiftKey });
+      // 大きさを変えている途中も、幅か高さの片方だけに切り替える（6.12.0）
+      if (resizeRef.current?.lastClient) resizeMoveRef.current({ ...resizeRef.current.lastClient, shiftKey });
+      if (zoneResizeRef.current?.lastClient) zoneResizeMoveRef.current({ ...zoneResizeRef.current.lastClient, shiftKey });
     };
     window.addEventListener("keydown", f);
     window.addEventListener("keyup", f);
@@ -2769,36 +2777,63 @@ export default function IdeaBoard() {
   };
 
   // ---- リサイズ ----
-  const onResizeDown = (e, note) => {
-    e.stopPropagation();
+  // shiftPick: Shift で角を押したときの最上位の付箋の id（動かさずに離したら選択に足す・外す。6.12.0）。
+  // el: ポインタを捕まえる要素（角）
+  const startNoteResize = (e, note, shiftPick, el) => {
     const exp = note.expanded;
     resizeRef.current = {
       id: note.id, expanded: exp,
       startX: e.clientX, startY: e.clientY,
       origW: exp ? note.ew : note.w,
       origH: exp ? note.eh : note.h,
+      shiftPick, moved: false,
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    el.setPointerCapture(e.pointerId);
+  };
+  const onResizeDown = (e, note) => {
+    e.stopPropagation();
+    startNoteResize(e, note, null, e.currentTarget);
+  };
+
+  // Shift を押している間は、引っぱった量の大きい方（幅か高さ）だけを変え、もう片方は元のまま（6.12.0。付箋と領域）。
+  // 固定した方は目盛りにも合わせない（合わせると元の大きさからずれる）
+  const lockSize = (e, r, min) => {
+    const zf = zoomRef.current || 1;
+    const dx = (e.clientX - r.startX) / zf, dy = (e.clientY - r.startY) / zf;
+    const fixW = e.shiftKey && Math.abs(dy) > Math.abs(dx);
+    const fixH = e.shiftKey && !fixW;
+    const size = (o, d, m, fixed) => {
+      if (fixed) return o;
+      const v = Math.max(m, o + d);
+      return gridRef.current ? Math.max(m, snap(v)) : v;
+    };
+    return { w: size(r.origW, dx, min.w, fixW), h: size(r.origH, dy, min.h, fixH), dx, dy };
   };
 
   const onResizeMove = (e) => {
     const r = resizeRef.current;
     if (!r) return;
-    const minW = r.expanded ? 240 : 120;
-    const minH = r.expanded ? 200 : 90;
-    const zf = zoomRef.current || 1;
-    let w = Math.max(minW, r.origW + (e.clientX - r.startX) / zf);
-    let h = Math.max(minH, r.origH + (e.clientY - r.startY) / zf);
-    if (gridRef.current) {
-      w = Math.max(minW, snap(w));
-      h = Math.max(minH, snap(h));
-    }
+    r.lastClient = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey };
+    const { w, h, dx, dy } = lockSize(e, r, r.expanded ? { w: 240, h: 200 } : { w: 120, h: 90 });
+    if (Math.abs(dx) + Math.abs(dy) > 3) r.moved = true;
+    if (r.shiftPick && !r.moved) return; // Shift+クリックの手ぶれで大きさを変えない
     setNotes((ns) =>
       ns.map((n) => (n.id === r.id ? (r.expanded ? { ...n, ew: w, eh: h } : { ...n, w, h }) : n))
     );
   };
 
-  const onResizeUp = () => { resizeRef.current = null; };
+  resizeMoveRef.current = onResizeMove;
+  zoneResizeMoveRef.current = onZoneResizeMove;
+
+  const onResizeUp = () => {
+    const r = resizeRef.current;
+    resizeRef.current = null;
+    // Shift で角を押して動かさずに離した → 今までどおり最上位の付箋を選択に足す・外す
+    if (r?.shiftPick && !r.moved) {
+      const pid = r.shiftPick;
+      setSelectedIds((ids) => (ids.includes(pid) ? ids.filter((i) => i !== pid) : [...ids, pid]));
+    }
+  };
 
   // ---- 削除 ----
   // 確認するかどうかは設定に従う（すぐ消すか、一度たずねるか）
@@ -3995,6 +4030,7 @@ export default function IdeaBoard() {
         {/* リサイズハンドル */}
         <div
           data-nodrag
+          data-resize
           title="ドラッグで大きさを変える"
           onPointerDown={(e) => onResizeDown(e, n)}
           onPointerMove={onResizeMove}

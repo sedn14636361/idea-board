@@ -46,6 +46,7 @@ const all = [
   ["tool-menu", "tool-menu.mjs", { BASE }],                          // 入りきらない付箋のボタンを「⋯」にしまう
   ["ctrl-text", "ctrl-text.mjs", { BASE }],                          // Ctrl(⌘)+ダブルクリックで、その場に文字を作る
   ["blank-text", "blank-text.mjs", { BASE }],                        // 空のまま離れた文字は消える
+  ["shift-resize", "shift-resize.mjs", { BASE }],                    // Shift+角で幅か高さの片方だけ変える
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);
