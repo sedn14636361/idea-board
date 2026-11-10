@@ -51,6 +51,9 @@ eq("1: 開くと、このスマホの3件が新しい順に出る", await rows()
   const ta = await M.locator("textarea").first().boundingBox(), li = await list.boundingBox();
   eq("1: 書く欄と一覧が同時に画面の中にある（書く欄が上）", [ta.y >= 0, ta.y + ta.height <= li.y, li.y < 760], [true, true, true]);
 }
+eq("1: 見出しは「ボード上の付箋」", (await toggle.innerText()).includes("ボード上の付箋"), true);
+// 中だけでスクロールする: 決まった高さの枠で、端まで行っても外側の画面は動かさない（6.17.0）
+eq("1: 一覧は決まった高さの枠の中でスクロールし、外へは伝えない", await list.evaluate((el) => { const c = getComputedStyle(el); return [c.overflowY, c.overscrollBehaviorY, Math.round(el.offsetHeight / window.innerHeight * 100)]; }), ["auto", "contain", 40]);
 // 2) 開いたまま書いて入れると、一覧が増える
 await write("四つめのメモ");
 eq("2: 開いたまま入れると一覧の先頭に増える", (await rows())[0], "四つめのメモ");
@@ -68,6 +71,20 @@ eq("3: パソコンで開いていたボード（本編）の付箋が、番号�
 eq("3: 中の付箋は字下げ", await indent(), [0, 0, 0, 14]);
 eq("3: ボードの名前が出る", await M.locator("[data-peek-board]").allInnerTexts(), ["本編", "設定メモ"]);
 eq("3: 読んだのは目次と「本編」のかけらだけ（設定メモは読まない）", [gets.some((g) => g.includes("_b1_")), gets.some((g) => g.includes("_b2_"))], [true, false]);
+
+{
+  // 一覧の上で指を動かす（ホイール）と、一覧だけが動き、外側（書く欄）は動かない
+  await M.setViewportSize({ width: 390, height: 300 }); // 枠（4割）が一覧より小さくなる高さ
+  const outer = () => M.locator("textarea").first().evaluate((el) => Math.round(el.getBoundingClientRect().top));
+  await list.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  const b = await list.boundingBox(), top0 = await outer();
+  await M.mouse.move(b.x + 50, b.y + 30);
+  for (let i = 0; i < 6; i++) await M.mouse.wheel(0, 300);
+  await M.waitForTimeout(300);
+  eq("3: 一覧の中でスクロールすると一覧が動き、端まで行っても外側は動かない", [await list.evaluate((el) => el.scrollTop > 0), await outer()], [true, top0]);
+  await list.evaluate((el) => { el.scrollTop = 0; });
+  await M.setViewportSize({ width: 390, height: 760 });
+}
 
 // 4) 押すと全文が開く・検索
 await M.locator('[data-peek-row="n1"]').click();
@@ -138,4 +155,4 @@ net.offline.delete("M");
   await ctx.close();
 }
 
-await done("今ある付箋（スマホ）");
+await done("ボード上の付箋（スマホ）");

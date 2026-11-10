@@ -10,7 +10,7 @@ const pg = await (await browser.newContext({ viewport: { width: 1400, height: 90
 pg.on("pageerror", (e) => { console.log("  pageerror:", e.message); ng++; });
 
 // 試験データ: 付箋1枚（#1）と、中のボードを開いた付箋1枚（#2）
-const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 190, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 5, z: num, ...extra });
+const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 260, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 5, z: num, ...extra });
 const A = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", title: "ボード1", nextNum: 3,
   notes: [note("n1", 1, "いまある付箋", 100, 100), note("n2", 2, "入れ物", 400, 100, { expanded: true })],
   edges: [], texts: [], zones: [], strokes: [], images: [] }] };

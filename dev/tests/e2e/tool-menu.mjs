@@ -18,7 +18,7 @@ const A = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", titl
     note("w120", 1, 100, 100, 120),
     note("w150", 2, 300, 100, 150),
     note("w190", 3, 520, 100, 190),
-    note("w240", 4, 780, 100, 240),
+    note("w260", 4, 780, 100, 260),
     note("P", 5, 1100, 100, 190, { expanded: true }),
     note("K", 6, 10, 10, 120, { parentId: "P" }),       // 開いた P の中の、幅 120 の付箋
     note("T", 7, 100, 450, 190),                         // 線でつなぐ先
@@ -45,11 +45,11 @@ const rowH = (id) => pg.evaluate((id) => document.querySelector(`[data-note="${i
 const items = () => pg.locator("[data-toolitem]").allTextContents();
 
 // 1) 幅ごとの出し入れ
-for (const id of ["w120", "w150", "w190", "w240", "P", "K"]) eq(`${id}: ボタンが付箋の枠の外に出ていない`, await inside(id), true);
-eq("幅 120・150・中の付箋（120）は「⋯」にしまう", [await more("w120").count(), await more("w150").count(), await more("K").count()], [1, 1, 1]);
-eq("幅 190・240・開いた付箋は「⋯」を出さない", [await more("w190").count(), await more("w240").count(), await more("P").count()], [0, 0, 0]);
+for (const id of ["w120", "w150", "w190", "w260", "P", "K"]) eq(`${id}: ボタンが付箋の枠の外に出ていない`, await inside(id), true);
+eq("幅 120・150・190・中の付箋（120）は「⋯」にしまう", [await more("w120").count(), await more("w150").count(), await more("w190").count(), await more("K").count()], [1, 1, 1, 1]);
+eq("標準の幅 260・開いた付箋は「⋯」を出さない", [await more("w260").count(), await more("P").count()], [0, 0]);
 eq("しまったときは ✕ などのボタンを操作列に出さない", await N("w120").locator(':scope > div:first-child button[title="剥がす（中身も一緒）"]').count(), 0);
-eq("しまっても行の高さは同じ（本文の位置が変わらない）", await rowH("w120"), await rowH("w190"));
+eq("しまっても行の高さは同じ（本文の位置が変わらない）", await rowH("w120"), await rowH("w260"));
 
 // 2) メニューの中身（名前つき）
 await more("w120").click();

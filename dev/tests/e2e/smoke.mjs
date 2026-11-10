@@ -51,7 +51,9 @@ eq("nextNum が 5", afterLoad.nextNum, 5);
 eq("画面の番号が #1..#4", await onScreen(), ["#1", "#2", "#3", "#4"]);
 
 // --- 2) 実際に付箋を剥がして繰り上がるか ---
-await page.locator('button[title="剥がす（中身も一緒）"]').first().click();
+// 大きさを持たない昔の付箋は幅 190 のまま。ボタンは「⋯」の中（6.17.0 でボタンを大きくしたため）
+await page.locator('button[title="ほかの操作"]').first().click();
+await page.locator('[data-toolitem="remove"]').click();
 await page.waitForTimeout(1500);
 const afterDel = await saved();
 console.log("削除後:", JSON.stringify(afterDel));

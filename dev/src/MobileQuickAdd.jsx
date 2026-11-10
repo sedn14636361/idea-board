@@ -901,7 +901,7 @@ export default function MobileQuickAdd() {
                   }}
                 >
                   <span style={{ width: 12 }}>{peek.open ? "▾" : "▸"}</span>
-                  <span style={{ flex: 1 }}>今ある付箋</span>
+                  <span style={{ flex: 1 }}>ボード上の付箋</span>
                 </button>
                 {peek.open && (
                   <div style={{ border: "1px solid #C9C2B2", borderTop: "none", borderRadius: "0 0 10px 10px", background: "#FFFDF6", padding: "8px 10px 10px" }}>
@@ -968,7 +968,8 @@ export default function MobileQuickAdd() {
                             background: "#FFFFFF", fontSize: 14, padding: "6px 10px", marginBottom: 8, fontFamily: "inherit", color: "#3E3A33",
                           }}
                         />
-                        <div data-peek-list style={{ maxHeight: "40vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                        {/* 決まった高さの枠の中だけでスクロールする。端まで行っても外側の画面は動かさない（overscrollBehavior） */}
+                        <div data-peek-list style={{ height: "40vh", overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", display: "flex", flexDirection: "column", gap: 6 }}>
                           {rows.length === 0 && (
                             <div style={{ fontSize: 12.5, color: "#9C9587", padding: "10px 2px" }}>
                               {all.length > 0 ? "見つかりません" : pc ? (board ? "このボードに付箋はありません" : peekBusy ? "" : "まだ読めていません") : "まだありません"}

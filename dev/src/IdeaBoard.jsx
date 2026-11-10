@@ -69,6 +69,7 @@ const tint = (hex, a) => {
 let idSeq = 1;
 const nextId = () => `n${Date.now().toString(36)}_${idSeq++}`;
 
+const NOTE_W = 260, NOTE_H = 182; // 新しく作る最上位の付箋の大きさ（グリッドの目盛り 26 の倍数）
 function makeNote(x, y, parentId, num) {
   const child = !!parentId;
   return {
@@ -84,8 +85,8 @@ function makeNote(x, y, parentId, num) {
     color: DEFAULT_COLOR,
     z: 1,
     expanded: false,
-    w: child ? 160 : 190,
-    h: child ? 140 : 170,
+    w: child ? 160 : NOTE_W, // 6.17.0: 操作列のボタンを大きくしたので、最上位の付箋の標準を 190×170 から広げた（中の付箋・今ある付箋はそのまま）
+    h: child ? 140 : NOTE_H,
     ew: child ? 340 : 430,
     eh: child ? 300 : 400,
   };
@@ -159,6 +160,12 @@ function collectDescendants(id, byParent, acc = []) {
 // 入りきるかは、ボタンを出していたときに測った幅（need）と、今の操作列の幅で決める（しまっている間は測れないため）。
 // つかむためのすき間 BAR_GRAB を残す。幅が変わったら（大きさの変更・開閉）ResizeObserver で測り直す
 const BAR_GAP = 4, BAR_GRAB = 16;
+// 操作列のボタン（6.17.0）: 薄い背景色の平らな四角。押せることが分かるように、今までより大きく
+const BAR_BTN = {
+  border: "none", borderRadius: 5, cursor: "pointer", background: "rgba(62,58,51,.1)", color: "#3E3A33",
+  height: 22, minWidth: 22, padding: "0 5px", fontSize: 12, fontWeight: 700, lineHeight: 1, whiteSpace: "nowrap",
+  display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxSizing: "border-box",
+};
 function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick, children }) {
   const rowRef = useRef(null), leadRef = useRef(null), lRef = useRef(null), rRef = useRef(null);
   const need = useRef(0);
@@ -187,7 +194,7 @@ function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick,
   const group = { display: "inline-flex", alignItems: "center", gap: BAR_GAP, flexShrink: 0 };
   return (
     // minHeight: しまっても行の高さを変えない（本文の位置が動かないように。ボタンを出しているときの高さ）
-    <div ref={rowRef} style={{ display: hidden ? "none" : "flex", alignItems: "center", gap: BAR_GAP, padding: "4px 6px 0", minHeight: 23, boxSizing: "border-box", flexShrink: 0, position: "relative" }}>
+    <div ref={rowRef} style={{ display: hidden ? "none" : "flex", alignItems: "center", gap: BAR_GAP, padding: "5px 6px 0", minHeight: 27, boxSizing: "border-box", flexShrink: 0, position: "relative" }}>
       <span ref={leadRef} style={group}>{lead}</span>
       {!fold && <span ref={lRef} style={group}>{toolsL}</span>}
       <div style={{ flex: 1 }} />
@@ -198,7 +205,7 @@ function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick,
           data-toolmenu
           title="ほかの操作"
           onClick={onMenu}
-          style={{ border: "none", borderRadius: 4, cursor: "pointer", background: menuOpen ? "rgba(62,58,51,.15)" : "transparent", fontSize: 13, fontWeight: 700, lineHeight: 1, color: "#3E3A33", padding: "1px 4px", flexShrink: 0 }}
+          style={{ ...BAR_BTN, fontSize: 13, ...(menuOpen ? { background: "rgba(62,58,51,.25)" } : {}) }}
         >
           ⋯
         </button>
@@ -1441,7 +1448,7 @@ export default function IdeaBoard() {
     const startX = vo.x + 60 / zf;
     const startY = vo.y + 80 / zf;
 
-    const NW = 190, NH = 170, GAP = 24;      // 付箋の大きさと間隔
+    const NW = NOTE_W, NH = NOTE_H, GAP = 24;      // 付箋の大きさと間隔
     const PAD = 22, HEAD = 34;               // 領域の内側の余白と見出しぶん
     const COLS = 3;                          // 3列でまとまりを作る
 
@@ -2035,7 +2042,7 @@ export default function IdeaBoard() {
   const addNoteCenter = () => {
     const sc = scrollerRef.current;
     const zf = zoom || 1;
-    const x = viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - 95;
+    const x = viewOrigin().x + (sc?.clientWidth || 600) / 2 / zf - NOTE_W / 2;
     const y = viewOrigin().y + 140 / zf;
     addNote(x + (Math.random() * 80 - 40), y + Math.random() * 100, null);
   };
@@ -3555,12 +3562,7 @@ export default function IdeaBoard() {
               data-nodrag
               title={n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う"}
               onClick={() => updateNote(n.id, { useTitle: !n.useTitle })}
-              style={{
-                border: "none", borderRadius: 4, cursor: "pointer",
-                fontSize: 10, fontWeight: 700, padding: "1px 5px",
-                background: n.useTitle ? "rgba(62,58,51,.7)" : "transparent",
-                color: n.useTitle ? "#F6F2E9" : "rgba(62,58,51,.5)",
-              }}
+              style={{ ...BAR_BTN, fontSize: 11, ...(n.useTitle ? { background: "rgba(62,58,51,.7)", color: "#F6F2E9" } : { color: "rgba(62,58,51,.6)" }) }}
             >
               T
             </button>
@@ -3569,12 +3571,7 @@ export default function IdeaBoard() {
                 data-nodrag
                 title={isExpanded ? "中のボードをしまう" : "中のボードを開く"}
                 onClick={() => updateNote(n.id, { expanded: !n.expanded })}
-                style={{
-                  border: "none", borderRadius: 4, cursor: "pointer",
-                  background: descendants > 0 ? "rgba(62,58,51,.12)" : "transparent",
-                  fontSize: 11, fontWeight: 700, color: "#3E3A33",
-                  padding: "1px 6px", whiteSpace: "nowrap",
-                }}
+                style={{ ...BAR_BTN, fontSize: 11, ...(descendants > 0 ? { background: "rgba(62,58,51,.2)" } : {}) }}
               >
                 {isExpanded ? "▾" : `▸${descendants > 0 ? descendants : ""}`}
               </button>
@@ -3586,7 +3583,7 @@ export default function IdeaBoard() {
               data-sidenote
               title="右に同じ色・タグの付箋を作って線でつなぐ"
               onClick={() => addSideNote(n)}
-              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#3E3A33", padding: "0 2px", whiteSpace: "nowrap" }}
+              style={{ ...BAR_BTN, fontSize: 11 }}
             >
               ＋→
             </button>
@@ -3595,7 +3592,7 @@ export default function IdeaBoard() {
               data-copymenu
               title="複製・他のボード/プロジェクトへコピー"
               onClick={() => { bringToFront(n.id); setCopyMenuFor(copyMenuFor === n.id ? null : n.id); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null); }}
-              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, padding: 0 }}
+              style={BAR_BTN}
             >
               ⧉
             </button>
@@ -3603,7 +3600,7 @@ export default function IdeaBoard() {
               data-nodrag
               title={selected ? "接続を解除" : "線でつなぐ"}
               onClick={() => setConnectFrom(selected ? null : n.id)}
-              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, padding: 0 }}
+              style={{ ...BAR_BTN, ...(selected ? { background: "rgba(176,72,60,.3)" } : {}) }}
             >
               🔗
             </button>
@@ -3611,7 +3608,7 @@ export default function IdeaBoard() {
               data-nodrag
               title="剥がす（中身も一緒）"
               onClick={() => removeNote(n.id)}
-              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, padding: 0 }}
+              style={BAR_BTN}
             >
               ✕
             </button>
@@ -5559,7 +5556,7 @@ export default function IdeaBoard() {
             // Ctrl（Mac は ⌘ も。Ctrl+クリックは右クリックになるため）+ダブルクリック: 押した位置に直書きの文字を作る（6.11.0）。
             // 貼る前の画面は出さない
             if (e.ctrlKey || e.metaKey) { addTextAt(p.x, p.y); return; }
-            addNote(p.x - 95, p.y - 40, null);
+            addNote(p.x - NOTE_W / 2, p.y - 40, null);
           }}
           style={{
             position: "relative",
