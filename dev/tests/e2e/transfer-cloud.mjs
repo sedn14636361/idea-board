@@ -1,7 +1,7 @@
 // 付箋を別のプロジェクトへ移したとき、クラウドの A と B の両方が新しい中身になるか（6.6.0）
 import { device, F, eq, done } from "./harness.mjs";
 const BASE = process.env.BASE;
-const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 190, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
+const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 260, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
 const board = (id, title, notes = []) => ({ id, title, nextNum: notes.length + 1, notes, edges: [], texts: [], zones: [], strokes: [], images: [] });
 const A = { id: "PA", name: "プロジェクトA", currentBoardId: "a1", boards: [board("a1", "ボード1", [note("n1", 1, "移す付箋", 120, 140), note("n4", 2, "残る付箋", 900, 140)])] };
 const B = { id: "PB", name: "プロジェクトB", currentBoardId: "b1", boards: [board("b1", "ボード1", [note("m1", 1, "Bの付箋", 60, 80)])] };

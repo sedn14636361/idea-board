@@ -10,7 +10,7 @@ const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PAT
 const pg = await (await browser.newContext({ viewport: { width: 1400, height: 860 } })).newPage();
 pg.on("pageerror", (e) => console.log("  pageerror:", e.message));
 
-const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 190, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
+const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 260, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
 const board = (id, title, notes = [], extra = {}) => ({ id, title, nextNum: notes.length + 1, notes, edges: [], texts: [], zones: [], strokes: [], images: [], ...extra });
 // プロジェクトA: ボード1 に ①（中に②）③④・文字2つ、線 ①–③ と ④–①。ボード2 は空
 const A = { id: "PA", name: "プロジェクトA", currentBoardId: "a1", boards: [

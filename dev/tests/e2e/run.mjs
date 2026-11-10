@@ -51,6 +51,8 @@ const all = [
   ["multi-grab", "multi-grab.mjs", { BASE }],                        // 2つ以上選んでいるときは、選んだ付箋のどこをつかんでも動かせる
   ["shift-repeat", "shift-repeat.mjs", { BASE }],                    // Shift を押し続けた（キーの自動の繰り返し）まま動かしても落ちない
   ["edge-toggle", "edge-toggle.mjs", { BASE }],                      // つないである付箋どうしでもう一度つなぐと線を外す
+  ["mobile-peek", "mobile-peek.mjs", { BASE }],                      // スマホ版: 今ある付箋（このスマホ・パソコンのボード）を見ながら書く
+  ["mobile-thread", "mobile-thread.mjs", { BASE }],                  // スマホ版: つなげた付箋を続けて書く → パソコンで線でつながる
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];
 const want = process.argv.slice(2);

@@ -11,7 +11,7 @@ pg.on("pageerror", (e) => { console.log("  pageerror:", e.message); ng++; });
 
 // 試験データ: 色の違う付箋3枚（#2 はタグ付き、#3 の中に付箋1枚）、線1本、文字1つ
 // 色の番号: 0 レモン / 1 さくら / 2 そら / 3 わかば / 4 ふじ / 5 グレー
-const note = (id, num, text, x, y, color, extra = {}) => ({ id, num, text, x, y, w: 190, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color, z: num, ...extra });
+const note = (id, num, text, x, y, color, extra = {}) => ({ id, num, text, x, y, w: 260, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color, z: num, ...extra });
 const A = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", title: "ボード1", nextNum: 5,
   notes: [
     note("n1", 1, "レモン", 100, 100, 0),

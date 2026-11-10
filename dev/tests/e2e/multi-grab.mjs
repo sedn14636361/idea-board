@@ -12,9 +12,9 @@ const pg = await (await browser.newContext({ viewport: { width: 1400, height: 90
 pg.on("pageerror", (e) => console.log("  pageerror:", e.message));
 
 // 試験データ: P（タイトル欄つき）・Q・開いた R（中に K）・選ばない U・文字 T
-const note = (id, num, x, y, extra = {}) => ({ id, num, text: id + "の本文", x, y, w: 190, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
+const note = (id, num, x, y, extra = {}) => ({ id, num, text: id + "の本文", x, y, w: 260, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
 const DATA = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", title: "ボード1", nextNum: 6,
-  notes: [note("P", 1, 101, 99, { useTitle: true, title: "見出しP" }), note("Q", 2, 330, 99), note("R", 3, 560, 99, { expanded: true }),
+  notes: [note("P", 1, 101, 99, { useTitle: true, title: "見出しP" }), note("Q", 2, 400, 99), note("R", 3, 700, 99, { expanded: true }),
     note("K", 4, 10, 10, { parentId: "R", w: 160, h: 140 }), note("U", 5, 101, 560)],
   edges: [], texts: [{ id: "T", x: 400, y: 600, text: "文字T", size: 1, z: 9 }], zones: [], strokes: [], images: [] }] };
 await pg.goto(BASE);
@@ -47,18 +47,18 @@ const start = await pos("P", "Q", "R", "U", "T");
 // 1) 本文をつかんで動かす → 全体が同じだけ動く
 await drag(await center(N("P").locator("textarea")), 60, 40);
 eq("1: P の本文をつかむ → P・Q・R が (+60,+40)、U・文字は動かない", await pos("P", "Q", "R", "U", "T"),
-  [[161, 139], [390, 139], [620, 139], start[3], start[4]]);
+  [[161, 139], [460, 139], [760, 139], start[3], start[4]]);
 eq("1: 動かしたあと入力欄にカーソルは無い", await focusedIn(), null);
 eq("1: 選択はそのまま", await picked(), ["P", "Q", "R"]);
 
 // 2) タイトル欄・開いた付箋の中の空き
 await drag(await center(N("P").locator('input[placeholder="タイトル"]')), -30, 0);
-eq("2: P のタイトル欄をつかむ → 全体が (-30,0)", await pos("P", "Q", "R"), [[131, 139], [360, 139], [590, 139]]);
+eq("2: P のタイトル欄をつかむ → 全体が (-30,0)", await pos("P", "Q", "R"), [[131, 139], [430, 139], [730, 139]]);
 {
   const inner = N("R").locator("[data-nodrag]").filter({ has: N("K") });
   const b = await inner.boundingBox();
   await drag({ x: b.x + b.width - 60, y: b.y + b.height - 80 }, 0, 26);
-  eq("2: R の中の空きをつかむ → 全体が (0,+26)", await pos("P", "Q", "R"), [[131, 165], [360, 165], [590, 165]]);
+  eq("2: R の中の空きをつかむ → 全体が (0,+26)", await pos("P", "Q", "R"), [[131, 165], [430, 165], [730, 165]]);
 }
 
 // 3) 動かさずに離す → 本文にカーソルが入り、書ける（選択はそのまま）
@@ -68,17 +68,17 @@ await pg.keyboard.type("を書き足す");
 {
   const b = await saved();
   eq("3: Q の本文を押しただけ → そこに書ける", b.notes.find((n) => n.id === "Q").text, "Qの本文を書き足す");
-  eq("3: 位置は変わらない", await pos("P", "Q", "R"), [[131, 165], [360, 165], [590, 165]]);
+  eq("3: 位置は変わらない", await pos("P", "Q", "R"), [[131, 165], [430, 165], [730, 165]]);
 }
 eq("3: 選択はそのまま", await picked(), ["P", "Q", "R"]);
 
 // 4) 今までどおりのもの
 await drag(await center(N("P").locator('button[title="タイトル欄をやめる"]')), 50, 50);
-eq("4: ボタンから引っぱっても動かない", await pos("P", "Q", "R"), [[131, 165], [360, 165], [590, 165]]);
+eq("4: ボタンから引っぱっても動かない", await pos("P", "Q", "R"), [[131, 165], [430, 165], [730, 165]]);
 await drag(await center(N("K").locator("textarea")), 40, 0);
-eq("4: 中の付箋 K の本文を引っぱっても、K も R も動かない（今までどおり）", await pos("K", "R"), [[10, 10], [590, 165]]);
+eq("4: 中の付箋 K の本文を引っぱっても、K も R も動かない（今までどおり）", await pos("K", "R"), [[10, 10], [730, 165]]);
 await drag(await center(N("K").getByText("#4", { exact: true })), 40, 0);
-eq("4: K の番号（つかみ代）からは K だけが親の中で動く。R は動かない", await pos("K", "R"), [[50, 10], [590, 165]]);
+eq("4: K の番号（つかみ代）からは K だけが親の中で動く。R は動かない", await pos("K", "R"), [[50, 10], [730, 165]]);
 await drag(await center(N("U").locator("textarea")), 80, 0);
 eq("4: 選んでいない U の本文を引っぱっても動かない", (await pos("U"))[0], start[3]);
 

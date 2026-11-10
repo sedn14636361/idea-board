@@ -12,7 +12,7 @@ const pg = await (await browser.newContext({ viewport: { width: 1400, height: 90
 pg.on("pageerror", (e) => console.log("  pageerror:", e.message));
 
 // 試験データ: A・B・C、幅の狭い N、開いた P（中に K）。線 A→B（メモ「理由」）・C→A
-const note = (id, num, x, y, extra = {}) => ({ id, num, text: id, x, y, w: 190, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
+const note = (id, num, x, y, extra = {}) => ({ id, num, text: id, x, y, w: 260, h: 170, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 0, z: num, ...extra });
 const DATA = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", title: "ボード1", nextNum: 7,
   notes: [note("A", 1, 100, 100), note("B", 2, 400, 100), note("C", 3, 100, 400), note("N", 4, 700, 100, { w: 120 }),
     note("P", 5, 900, 300, { expanded: true }), note("K", 6, 10, 10, { parentId: "P", w: 150, h: 120 })],

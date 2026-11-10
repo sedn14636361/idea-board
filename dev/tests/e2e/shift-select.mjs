@@ -15,7 +15,7 @@ const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PAT
 const pg = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage();
 pg.on("pageerror", (e) => console.log("  pageerror:", e.message));
 
-const note = (id, num, text, x, y, color, extra = {}) => ({ id, num, text, x, y, w: 220, h: 230, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color, z: num, ...extra });
+const note = (id, num, text, x, y, color, extra = {}) => ({ id, num, text, x, y, w: 260, h: 230, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color, z: num, ...extra });
 // A: タイトル欄・タグ・引用つき / B: 開いていて中に C / D: 選ばない
 const A = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", title: "ボード1", nextNum: 5,
   notes: [

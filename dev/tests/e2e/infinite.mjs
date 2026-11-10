@@ -103,7 +103,7 @@ await pg.waitForTimeout(1200);
 const bd = await saved();
 const added = bd.notes.find((n) => !["n1", "n2"].includes(n.id));
 const zoom = 1;
-const want = { x: (click.x - o.x) / zoom - 95, y: (click.y - o.y) / zoom - 40 };
+const want = { x: (click.x - o.x) / zoom - 130, y: (click.y - o.y) / zoom - 40 };
 eq("ダブルクリックした場所（マイナス）に付箋ができる", [added && near(added.x, want.x, 30), added && near(added.y, want.y, 30), added && added.x < 0], [true, true, true]);
 // 範囲選択でマイナスの場所の付箋を選べる
 await pg.keyboard.press("Escape");
