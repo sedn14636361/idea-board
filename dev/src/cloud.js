@@ -292,7 +292,7 @@ export async function projectPushSplit(conf, project, device, prev = {}, expect 
       if (prev[b.id] === h && prev.__parts[b.id]) {
         // 変わっていない。今の版のかけらをそのまま使う
         const v = prev.__v[b.id] || "";
-        metaBoards.push({ id: b.id, parts: prev.__parts[b.id], h, ...(v ? { v } : {}) });
+        metaBoards.push({ id: b.id, parts: prev.__parts[b.id], h, ...(v ? { v } : {}), t: b.title || "" });
         hashes[b.id] = h; hashes.__parts[b.id] = prev.__parts[b.id]; hashes.__v[b.id] = v;
         continue;
       }
@@ -304,7 +304,7 @@ export async function projectPushSplit(conf, project, device, prev = {}, expect 
         const r = await putDoc(conf, token, id, { part: { stringValue: parts[i] } }, { exists: false });
         if (!r.ok) { await cleanup(); return { ok: false }; }
       }
-      metaBoards.push({ id: b.id, parts: parts.length, h, v });
+      metaBoards.push({ id: b.id, parts: parts.length, h, v, t: b.title || "" }); // t: ボード名（スマホ版が一覧に出す。6.16.0）
       hashes[b.id] = h; hashes.__parts[b.id] = parts.length; hashes.__v[b.id] = v;
     }
   } catch (e) {
@@ -395,6 +395,43 @@ export async function projectPullSplit(conf, id) {
       project: { id, name: f.name?.stringValue || "", boards, currentBoardId: meta.currentBoardId },
       savedAt, device, updateTime, shape: "split", hashes,
     };
+  }
+  return null;
+}
+
+// ボード1枚だけを読む（スマホ版の「今ある付箋」用。6.16.0）。ほかのボードのかけら（画像など）は読まない。
+// boardId が無い・見つからないときは、パソコンで開いていたボード（無ければ先頭）。
+// 戻り値: { name, updateTime, boards: [{ id, title }], boardId, board }。プロジェクトが無ければ null。
+// ボード名は目次の t（6.16.0 から書く）。それより前に保存された目次には無いので title は ""。
+export async function projectPeek(conf, id, boardId = null) {
+  const token = await signIn(conf);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const head = await getDoc(conf, token, id);
+    if (!head) return null;
+    const f = head.fields || {};
+    const name = f.name?.stringValue || "";
+    const updateTime = head.updateTime || null;
+    if (f.payload?.stringValue) {                // 旧形式（丸ごと）
+      let p;
+      try { p = JSON.parse(f.payload.stringValue); } catch (e) { return null; }
+      const bs = p.boards || [];
+      const b = bs.find((x) => x.id === boardId) || bs.find((x) => x.id === p.currentBoardId) || bs[0] || null;
+      return { name, updateTime, boards: bs.map((x) => ({ id: x.id, title: x.title || "" })), boardId: b?.id || null, board: b };
+    }
+    if (f.shape?.stringValue !== "split") return null;
+    let meta;
+    try { meta = JSON.parse(f.meta?.stringValue || "{}"); } catch (e) { return null; }
+    const list = meta.boards || [];
+    const boards = list.map((m) => ({ id: m.id, title: m.t || "" }));
+    const m = list.find((x) => x.id === boardId) || list.find((x) => x.id === meta.currentBoardId) || list[0];
+    if (!m) return { name, updateTime, boards, boardId: null, board: null };
+    const got = await Promise.all(
+      Array.from({ length: m.parts }, (_, i) => getDoc(conf, token, partId(id, m.id, i, m.v || "")))
+    );
+    if (got.some((g) => !g)) continue;           // 読んでいる間に切り替わった。目次から読み直す
+    let board;
+    try { board = JSON.parse(got.map((g) => g.fields?.part?.stringValue || "").join("")); } catch (e) { return null; }
+    return { name, updateTime, boards, boardId: m.id, board };
   }
   return null;
 }

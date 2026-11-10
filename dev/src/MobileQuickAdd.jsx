@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import {
   loadCloudConf, saveCloudConf, cloudTest, cloudPush, loadCloudDraft, saveCloudDraft, projectList,
-  tagsPush, tagsPull,
+  tagsPush, tagsPull, projectPeek,
 } from "./cloud.js";
+import { boardRows, localRows, filterRows } from "./peek.js";
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { APP_VERSION } from "./version.js";
 
@@ -29,6 +30,8 @@ const UNSENT_KEY = "idea-board-inbox-unsent"; // まだ送れていない付箋�
 const TAG_BASE_KEY = "idea-board-tag-base";   // タグ表を最後にサーバーとそろえた内容（三方向マージの基準。tagsync.js）
 const ALERT_KEY = "idea-board-alert-tags";    // 赤で目立たせるタグ（スマホでは変えないが、サーバーから来たものを覚えておく）
 const RELOAD_DRAFT_KEY = "idea-board-reload-draft"; // 新しい版へ切り替えるときに、書きかけの文字を持ち越す（sessionStorage）
+const PEEK_KEY = "idea-board-peek";             // 「今ある付箋」の開け閉めと、見ている側（このスマホ／パソコンのボード）
+const PEEK_CACHE_KEY = "idea-board-peek-cache"; // パソコンのボードを最後に読んだ内容（文字だけ。電波が無いときに出す）
 const COMPOSE_KEY = "idea-board-compose";     // 「書く」で選んでいる色・タグ・まとめ先・タイトルのチェック（送っても残す）
 // 領域の色（PC版の付箋の色と同じ並び）
 const AREA_COLORS = ["#E8D96A", "#F0A8BC", "#93C9EE", "#A3D98F", "#C3AEEE", "#C6C1B6"];
@@ -103,6 +106,15 @@ export default function MobileQuickAdd() {
   const [newCat, setNewCat] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [updateReady, setUpdateReady] = useState(false); // 新しい版がそろった（「切り替える」を出す）
+  // ---- 今ある付箋（書きながら見る。6.16.0）----
+  const readJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
+  const [peek, setPeek] = useState(() => ({ open: false, src: "local", ...readJson(PEEK_KEY, {}) }));
+  const [peekPc, setPeekPc] = useState(() => readJson(PEEK_CACHE_KEY, null)); // { pid, name, boards, boardId, byBoard: { 板のid: { rows, at } } }
+  const [peekQuery, setPeekQuery] = useState("");
+  const [peekRow, setPeekRow] = useState(null);     // 全文を開いている行
+  const [peekBusy, setPeekBusy] = useState(false);
+  const [peekErr, setPeekErr] = useState("");
+  const peekSeq = useRef(0);                        // 読んでいる間に切り替えたら、古い返事は捨てる
   const areaRef = useRef(null);
   const itemsRef = useRef([]);            // 送信が終わった時点の最新の付箋（送っている間に直されたかを見る）
   itemsRef.current = items;
@@ -640,6 +652,45 @@ export default function MobileQuickAdd() {
 
   const cloudUsable = !standalone; // ホーム画面アプリでは設定が消えるため使わない
 
+  // ---- 今ある付箋: パソコンのボードを読む（読むだけ。見ているボード1枚だけ）----
+  const peekPcOn = !!cloud && cloudUsable;           // パソコンのボードを見られるか（クラウド同期があるときだけ）
+  const peekSrc = peekPcOn && peek.src === "pc" ? "pc" : "local";
+  const peekMine = peekPc && curTarget && peekPc.pid === curTarget.id ? peekPc : null; // 今の送り先のぶんだけ使う
+  const savePeek = (next) => { setPeek(next); try { localStorage.setItem(PEEK_KEY, JSON.stringify(next)); } catch (e) { /* 覚えられなくても動く */ } };
+  const loadPeek = async (boardId = null) => {
+    const tg = curTarget;
+    if (!peekPcOn || !tg) return;
+    const seq = ++peekSeq.current;
+    setPeekBusy(true); setPeekErr("");
+    try {
+      const r = await projectPeek(cloud, tg.id, boardId);
+      if (seq !== peekSeq.current) return;
+      if (!r) { setPeekErr("このプロジェクトを読めませんでした"); return; }
+      setPeekPc((prev) => {
+        const base = prev && prev.pid === tg.id ? prev : { pid: tg.id, byBoard: {} };
+        const next = {
+          ...base, name: r.name, boards: r.boards, boardId: r.boardId,
+          byBoard: { ...base.byBoard, ...(r.boardId ? { [r.boardId]: { rows: boardRows(r.board), at: Date.now() } } : {}) },
+        };
+        try { localStorage.setItem(PEEK_CACHE_KEY, JSON.stringify(next)); } catch (e) { /* 入りきらなければ控えないだけ */ }
+        return next;
+      });
+    } catch (e) {
+      if (seq === peekSeq.current) setPeekErr("読み込めませんでした");
+    } finally {
+      if (seq === peekSeq.current) setPeekBusy(false);
+    }
+  };
+  // 開いたとき・パソコンのボードへ切り替えたとき・送り先を変えたときに読む（定期的には読まない）
+  useEffect(() => {
+    if (peek.open && peekSrc === "pc" && curTarget) loadPeek(peekMine?.boardId || null);
+  }, [peek.open, peekSrc, cloud, curTarget?.id]);
+  const pickPeekBoard = (bid) => {
+    setPeekRow(null);
+    setPeekPc((prev) => (prev ? { ...prev, boardId: bid } : prev)); // 控えがあればすぐ出す
+    loadPeek(bid);
+  };
+
   // 送れたものだけ未送信から外す。送っている間に直された付箋（版番号が変わった）は未送信のまま残し、続けて送る
   const pushToCloud = (list) => {
     if (!cloud || !cloudUsable || !list || list.length === 0) return Promise.resolve(false);
@@ -826,6 +877,153 @@ export default function MobileQuickAdd() {
               }}
             />
           </div>
+
+          {/* 今ある付箋（開け閉めできる。書きながら見る） */}
+          {(() => {
+            const pc = peekSrc === "pc";
+            const board = pc && peekMine ? peekMine.byBoard?.[peekMine.boardId] : null;
+            const all = pc ? (board?.rows || []) : localRows(items);
+            const rows = filterRows(all, peekQuery);
+            const seg = (on) => ({
+              flex: 1, border: "none", borderRadius: 8, padding: "6px 4px", fontSize: 12.5, cursor: "pointer",
+              background: on ? "#3E3A33" : "transparent", color: on ? "#F6F2E9" : "#6B665C", fontWeight: on ? 700 : 400,
+            });
+            const time = (at) => { const d = new Date(at); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
+            return (
+              <div data-peek style={{ marginBottom: 14 }}>
+                <button
+                  data-peek-toggle
+                  onClick={() => savePeek({ ...peek, open: !peek.open })}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", gap: 8, textAlign: "left",
+                    border: "1px solid #C9C2B2", borderRadius: peek.open ? "10px 10px 0 0" : 10, padding: "9px 12px",
+                    background: "#FFFDF6", color: "#3E3A33", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+                  }}
+                >
+                  <span style={{ width: 12 }}>{peek.open ? "▾" : "▸"}</span>
+                  <span style={{ flex: 1 }}>今ある付箋</span>
+                </button>
+                {peek.open && (
+                  <div style={{ border: "1px solid #C9C2B2", borderTop: "none", borderRadius: "0 0 10px 10px", background: "#FFFDF6", padding: "8px 10px 10px" }}>
+                    {peekPcOn && (
+                      <div style={{ display: "flex", gap: 4, background: "#EDE8DC", borderRadius: 10, padding: 3, marginBottom: 8 }}>
+                        <button data-peek-src="local" onClick={() => { setPeekRow(null); savePeek({ ...peek, src: "local" }); }} style={seg(!pc)}>このスマホ ({items.length})</button>
+                        <button data-peek-src="pc" onClick={() => { setPeekRow(null); savePeek({ ...peek, src: "pc" }); }} style={seg(pc)}>パソコンのボード</button>
+                      </div>
+                    )}
+                    {pc && !curTarget && (
+                      <button
+                        onClick={() => { setTargetOpen(true); refreshProjects(); }}
+                        style={{ width: "100%", border: "1px solid #C9C2B2", borderRadius: 8, background: "transparent", color: "#3E3A33", fontSize: 13, padding: "9px 0", cursor: "pointer" }}
+                      >
+                        送り先のプロジェクトを選ぶ
+                      </button>
+                    )}
+                    {pc && curTarget && (
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{curTarget.name}</span>
+                          <span data-peek-status style={{ fontSize: 11, color: peekErr ? "#B0483C" : "#9C9587", flexShrink: 0 }}>
+                            {peekBusy ? "読み込み中…" : peekErr || (board ? `${time(board.at)} に読みました` : "")}
+                          </span>
+                          <button
+                            data-peek-reload
+                            onClick={() => loadPeek(peekMine?.boardId || null)}
+                            disabled={peekBusy}
+                            style={{ border: "1px solid #C9C2B2", borderRadius: 12, background: "transparent", color: "#6B665C", fontSize: 11, padding: "3px 10px", cursor: "pointer", flexShrink: 0 }}
+                          >
+                            読み直す
+                          </button>
+                        </div>
+                        {(peekMine?.boards || []).length > 1 && (
+                          <div style={{ display: "flex", gap: 5, overflowX: "auto", marginBottom: 8, paddingBottom: 2 }}>
+                            {peekMine.boards.map((b, i) => (
+                              <button
+                                key={b.id}
+                                data-peek-board={b.id}
+                                onClick={() => pickPeekBoard(b.id)}
+                                style={{
+                                  flexShrink: 0, borderRadius: 14, padding: "4px 12px", fontSize: 12, cursor: "pointer",
+                                  border: b.id === peekMine.boardId ? "1.5px solid #3E3A33" : "1px solid #C9C2B2",
+                                  background: b.id === peekMine.boardId ? "#3E3A33" : "transparent",
+                                  color: b.id === peekMine.boardId ? "#F6F2E9" : "#3E3A33",
+                                }}
+                              >
+                                {b.title || `ボード${i + 1}`}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {(!pc || curTarget) && (
+                      <>
+                        <input
+                          data-peek-search
+                          value={peekQuery}
+                          placeholder="検索（文字・タグ・#番号）"
+                          onChange={(e) => setPeekQuery(e.target.value)}
+                          style={{
+                            width: "100%", boxSizing: "border-box", border: "1px solid #D9D2C2", borderRadius: 8,
+                            background: "#FFFFFF", fontSize: 14, padding: "6px 10px", marginBottom: 8, fontFamily: "inherit", color: "#3E3A33",
+                          }}
+                        />
+                        <div data-peek-list style={{ maxHeight: "40vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                          {rows.length === 0 && (
+                            <div style={{ fontSize: 12.5, color: "#9C9587", padding: "10px 2px" }}>
+                              {all.length > 0 ? "見つかりません" : pc ? (board ? "このボードに付箋はありません" : peekBusy ? "" : "まだ読めていません") : "まだありません"}
+                            </div>
+                          )}
+                          {rows.map((r) => {
+                            const col = COLORS[r.color] || COLORS[DEFAULT_COLOR];
+                            const open = peekRow === r.id;
+                            const body = r.text.trim() !== r.heading.trim() ? r.text : "";
+                            return (
+                              <div
+                                key={r.id}
+                                data-peek-row={r.id}
+                                onClick={() => setPeekRow(open ? null : r.id)}
+                                style={{
+                                  marginLeft: r.depth * 14, flexShrink: 0, background: col.bg, borderLeft: `5px solid ${col.edge}`,
+                                  borderRadius: 5, padding: "6px 9px", cursor: "pointer",
+                                }}
+                              >
+                                <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+                                  {r.num > 0 && <span style={{ fontSize: 10.5, fontWeight: 700, color: "rgba(62,58,51,.6)", flexShrink: 0 }}>#{r.num}</span>}
+                                  <span style={{
+                                    flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 700, lineHeight: 1.45, wordBreak: "break-word",
+                                    ...(open ? {} : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+                                  }}>
+                                    {r.heading || "（無題）"}
+                                  </span>
+                                </div>
+                                {body && (
+                                  <div style={{
+                                    fontSize: 12.5, lineHeight: 1.55, color: "#5A554B", marginTop: 2, wordBreak: "break-word",
+                                    ...(open ? { whiteSpace: "pre-wrap" } : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+                                  }}>
+                                    {open ? body : body.replace(/\s+/g, " ")}
+                                  </div>
+                                )}
+                                {(r.tags.length > 0 || r.zone) && (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                                    {r.zone && <span style={{ fontSize: 10.5, borderRadius: 8, padding: "0 7px", background: "rgba(62,58,51,.12)", color: "#5A554B" }}>▢ {r.zone}</span>}
+                                    {r.tags.map((t) => (
+                                      <span key={t} style={{ fontSize: 10.5, fontWeight: 700, borderRadius: 8, padding: "0 7px", background: "rgba(255,253,246,.9)", color: tagColorOf(t) }}>{t}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* 送り先のプロジェクト */}
           {cloud && cloudUsable && (
