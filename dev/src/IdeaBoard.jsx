@@ -9,7 +9,7 @@ import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.
 import { renumber, transferNotes } from "./notes.js";
 import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, rewriteHist, withoutBlankText, isBlankText } from "./history.js";
 import { snapToGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
-import { incomingPlan, noteContentHash } from "./incoming.js";
+import { incomingPlan, noteContentHash, chainsOf, layoutChains, linksOf } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
 // ---- 定数 ----
@@ -1433,12 +1433,16 @@ export default function IdeaBoard() {
     // まとめ先（スマホで指定したもの）を優先し、無ければタグのカテゴリでまとめる
     const groups = new Map();
     const groupColor = new Map();
+    // つなげて書いた付箋（6.18.0）は、色やタグが違っても離さず、先頭の付箋のまとまりに全部を置く
+    const headOf = new Map();
+    for (const chain of chainsOf(items)) for (const it of chain) headOf.set(it, chain[0]);
     for (const it of items) {
-      const key = ((it.area || "").trim() || (it.category || "").trim() || "");
+      const h = headOf.get(it) || it;
+      const key = ((h.area || "").trim() || (h.category || "").trim() || "");
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(it);
       // まとめ先には色が付いてくるので、領域の色に使う
-      if ((it.area || "").trim() && it.areaColor && !groupColor.has(key)) groupColor.set(key, it.areaColor);
+      if ((h.area || "").trim() && h.areaColor && !groupColor.has(key)) groupColor.set(key, h.areaColor);
     }
 
     // 画面の左上あたりから、空いている場所を探して置く
@@ -1459,8 +1463,9 @@ export default function IdeaBoard() {
     updateBoard((b) => {
       let num = b.nextNum || 1;
       for (const [catName, list] of groups) {
-        const cols = Math.min(COLS, list.length);
-        const rows = Math.ceil(list.length / cols);
+        // つながっていない付箋は3列で詰め、スマホでつなげて書いた付箋はその下に横一列（6.18.0）
+        const lay = layoutChains(chainsOf(list), COLS);
+        const cols = lay.cols, rows = lay.rows;
         const gw = cols * NW + (cols - 1) * GAP + PAD * 2;
         const gh = rows * NH + (rows - 1) * GAP + PAD + HEAD;
 
@@ -1485,9 +1490,10 @@ export default function IdeaBoard() {
           });
         }
 
-        list.forEach((it, i) => {
-          const cx = ox + PAD + (i % cols) * (NW + GAP);
-          const cy = oy + HEAD + Math.floor(i / cols) * (NH + GAP);
+        list.forEach((it) => {
+          const cell = lay.cells.get(it);
+          const cx = ox + PAD + cell.col * (NW + GAP);
+          const cy = oy + HEAD + cell.row * (NH + GAP);
           const n = makeNote(
             gridRef.current ? snap(cx) : cx,
             gridRef.current ? snap(cy) : cy,
@@ -1504,10 +1510,23 @@ export default function IdeaBoard() {
         ox += gw + 50;
         rowH = Math.max(rowH, gh);
       }
+      // つなげて書いた付箋を線で結ぶ（前の付箋 → この付箋）。前の付箋は、今回貼ったものか、
+      // このボードに取り込み済みのもの（src.id で探す）。見つからなければ線は引かない
+      const bySrc = new Map();
+      for (const n of [...b.notes, ...newNotes]) if (n.src?.id && !n.parentId) bySrc.set(String(n.src.id), n.id);
+      const newIds = new Set(newNotes.map((n) => n.id));
+      const edges = [...(b.edges || [])];
+      for (const [from, to] of linksOf(items)) {
+        const a = bySrc.get(from), c = bySrc.get(to);
+        if (!a || !c || a === c || !newIds.has(c)) continue;
+        if (edges.some((e) => (e.from === a && e.to === c) || (e.from === c && e.to === a))) continue;
+        edges.push({ id: nextId(), from: a, to: c });
+      }
       return {
         ...b,
         nextNum: num,
         notes: [...b.notes, ...newNotes],
+        edges,
         zones: [...(b.zones || []), ...newZones],
       };
     });

@@ -118,7 +118,7 @@
 - クラウド設定の保存: loadCloudConf/saveCloudConf に加えて loadCloudDraft/saveCloudDraft（入力途中の控え）を用意。**読み込みは他の初期化処理と分けた独立の useEffect** で行う（まとめて読むと、途中で例外が出たときに設定だけ復元されない事故になる）。saveCloudConf は保存可否を返し、失敗時はその旨を画面に出す
 - 注意: Safari で開いた場合とホーム画面アプリとして開いた場合で、保存先が別になることがある。設定は開き方ごとに1回ずつ必要になる場合がある（「設定をコピー」「設定を貼り付け」で移せる）
 - スマホ版の「まとめ先」(AREAS_KEY): 付箋ごとに指定できる区分。名前と色を持ち、送信時に area / areaColor として渡す。PC側の placeIncoming は **area を最優先**（無ければタグのカテゴリ）でグループ化し、その色で領域(zone)を作る
-- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.17.0。設定画面（PC）と⚙（スマホ）に表示される
+- 版管理: src/version.js の APP_VERSION と package.json の version を**必ず両方**更新し、CHANGELOG.md に1行足す。**そのあと `npm run single` で一番上の IdeaBoard.html を作り直す**（古いままだと `npm run check` が止める）。README の版表示も合わせる。現在 6.18.0。設定画面（PC）と⚙（スマホ）に表示される
 - スマホ版の一覧: チェックで選択 → 共有・CSV出力・削除・PCへ送信は「選んだものだけ」（未選択なら全部）。↑↓で並び替えでき、**その順番のままPCに取り込まれる**（items は上から古い順で保持し、追加は末尾に足す）
 - スマホ版の「データでコピー」は廃止し CSV 出力に置き換え（BOM付き・引用符エスケープ。navigator.share のファイル共有を優先、不可ならダウンロード、それも不可ならコピー）
 - **ホーム画面アプリ（standalone）ではクラウド同期を出さない**: iOSのPWAは設定を保持できないことがあるため。判定は display-mode:standalone / navigator.standalone。CSVや共有での受け渡しを案内する
@@ -328,6 +328,16 @@
   - 「新しい版があることを知らせて、押したら読み込み直す」は web.dev / Workbox が勧める一般的な形
 - 変更箇所のスクリーンショットを報告に添える決まりを追加（上の「設定画面」の節）。`mobile-update.mjs` のサーバーと「次の版」作りは `pages.mjs` に切り出した
 - 試験: 実ブラウザ `mobile-update.mjs`（GitHub Pages と同じ max-age=600 で返すサーバー。今の dist から版の文字とファイル名だけ変えた「次の版」を作って公開し直し、開き直さずに知らせが出る・直している間は出ない・切り替えで新しい版になり書きかけが残る・切り替え後に電波なしで開ける、を確認）。**6.4.0 の build にかけると知らせが出ず NG になる**ことも確認
+
+## 6.18.0 での変更
+- **スマホ版: つなげた付箋を続けて書く**（ユーザー要望「一度に繋げられた複数の付箋を書けて追加」「入力欄のすぐ下に幅と同じ＋ボタン」「Twitter のリプライや一括投稿のイメージ」「元々編集していた付箋にも戻れる」。パソコンでは横一列、はユーザーが選択）
+  - スマホ: 今書いている付箋（今までの `text` などの state）の前後に、下書きの並び `before` / `after`（{ text, title, useTitle, color, tags, area }）。「＋」（`data-thread-add`。書く欄 `data-write-card` のすぐ下・同じ幅）= `addNext`（今の付箋を `before` に送り、色・タグなどを引き継いだ空の欄へ）。並びの小さい付箋（`data-thread-card` = "b0" "a0" …）を押すと `goBefore` / `goAfter` で移る。✕ で外す。直している間（`editing`）は出さない
+  - `add()` は `[...before, 今, ...after]` のうち書いてあるものを順に入れ、**2つめ以降に `prev`（前の付箋の id）** を付ける。id は `Date.now() + i`。入れたら並びを空にする
+  - 書きかけは `THREAD_KEY`（`idea-board-thread` = { before, after, text, title }）に、並びがあるときだけ覚える
+  - パソコン: `src/incoming.js` の `chainsOf(list)`（prev で鎖に分ける。先頭が届いた順。前が無い・同じ前を2つが指す・輪でも付箋は消さない）、`layoutChains(chains, cols)`（つながっていない付箋は3列で詰め、鎖はその下に鎖ごと横一列）、`linksOf(list)`（[前の id, この id]）
+  - `placeIncoming`: **鎖は先頭の付箋のまとまり（まとめ先／タグのカテゴリ）に全部を置く**（色やタグが違うと別の囲みに分かれて離れていた。試験で発見）。線は、前の付箋が今回貼ったものか、このボードに取り込み済みのもの（`src.id`）なら引く。すでにある線・書き換え（update）だけの付箋には引かない
+  - 送ったあとにスマホで直した付箋は、今までどおり取り込み済みの付箋を書き換える（線は変えない）
+  - 試験: 単体 `chains.test.mjs`、e2e `mobile-thread`（＋の位置と幅・足す・戻って直す・開き直し・空の欄は入らない・prev・色とタグ・パソコンで横一列と線2本・単独は線なし・あとから届いた続き）。変更前（6.17.0）の版では「＋」が無く NG
 
 ## 6.17.0 での変更
 - **スマホ版「今ある付箋」→「ボード上の付箋」**（ユーザー指定の名前）。一覧（`data-peek-list`）は `height: 40vh` の枠で、`overscrollBehavior: contain`（端まで行っても外側の画面へスクロールを伝えない。ユーザー要望「その中だけでスクロール」）。コードの中の名前（peek）や保存のキーは変えていない
