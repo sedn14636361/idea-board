@@ -3,7 +3,11 @@
 //   localRows  : このスマホの「ためた分」 → 一覧の行
 //   filterRows : 検索で絞る
 
-const headingOf = (n) => (n.title || "").trim() || (n.text || "").split("\n").find((l) => l.trim()) || "";
+import { noteContentHash } from "./incoming.js";
+
+// 見出しはタイトルだけ（6.21.0）。タイトルが無ければ空（本文の1行目を見出しにしない。ユーザー指定）。
+// パソコンの付箋は、タイトル欄を使っていない（useTitle が false）ときもタイトルは出さない（パソコンでも見えないため）
+const titleOf = (n) => (n.useTitle === false ? "" : (n.title || "").trim());
 
 // 付箋の中心が入っている領域の名前（重なっていれば面積の小さい方。PC 版の付箋リストと同じ決め方）
 const zoneOf = (zones, n) => {
@@ -18,7 +22,7 @@ const zoneOf = (zones, n) => {
 };
 
 // 最上位の付箋を番号の順に並べ、中の付箋は親のすぐ下に字下げ（depth）して並べる。
-// 行: { id, num, heading, text, tags, color, depth, zone }
+// 行: { id, num, heading, text, tags, color, depth, zone, title, useTitle, h }。heading はタイトル（無ければ ""）
 export function boardRows(board) {
   const notes = board?.notes || [];
   const ids = new Set(notes.map((n) => n.id));
@@ -30,7 +34,11 @@ export function boardRows(board) {
   for (const k of Object.keys(kids)) kids[k].sort((a, b) => (a.num || 0) - (b.num || 0));
   const out = [];
   const walk = (n, depth, zone) => {
-    out.push({ id: n.id, num: n.num || 0, heading: headingOf(n), text: n.text || "", tags: [...(n.tags || [])], color: n.color ?? null, depth, zone });
+    // title / useTitle / h はスマホから直すときに使う（h = 読んだときの中身の指紋。パソコンで直されていないかの確かめ）
+    out.push({
+      id: n.id, num: n.num || 0, heading: titleOf(n), text: n.text || "", tags: [...(n.tags || [])], color: n.color ?? null, depth, zone,
+      title: n.title || "", useTitle: !!n.useTitle, h: noteContentHash(n),
+    });
     for (const c of kids[n.id] || []) walk(c, depth + 1, zone);
   };
   for (const n of kids[""] || []) walk(n, 0, zoneOf(board?.zones, n));
@@ -40,7 +48,7 @@ export function boardRows(board) {
 // このスマホの付箋。新しいものを上に（書いたばかりのものがすぐ見えるように）。zone はまとめ先
 export function localRows(items) {
   return [...(items || [])].reverse().map((it) => ({
-    id: it.id, num: 0, heading: headingOf(it), text: it.text || "", tags: [...(it.tags || [])],
+    id: it.id, num: 0, heading: (it.title || "").trim(), text: it.text || "", tags: [...(it.tags || [])],
     color: it.color ?? null, depth: 0, zone: it.area || "",
   }));
 }

@@ -24,7 +24,10 @@ const B2 = { id: "b2", title: "設定メモ", nextNum: 2, notes: [N("m1", 1, 0, 
 {
   const rows = boardRows(B1);
   eq("番号の順。中の付箋は親のすぐ下に（番号の順で）", rows.map((r) => `${"・".repeat(r.depth)}#${r.num}`), ["#1", "#2", "#3", "・#4", "・#5", "・・#6"]);
-  eq("見出しはタイトル、無ければ本文の最初の（空でない）行", rows.slice(0, 2).map((r) => r.heading), ["起", "空行のあとの一行目"]);
+  eq("見出しはタイトルだけ。無ければ空（本文の1行目を見出しにしない。6.21.0）", rows.slice(0, 2).map((r) => r.heading), ["起", ""]);
+  eq("タイトル欄を使っていない付箋は、タイトルが入っていても見出しにしない", boardRows({ notes: [N("q", 1, 0, 0, { title: "隠れた題", useTitle: false })] })[0].heading, "");
+  eq("直すときに使うタイトル・タイトル欄の有無を持つ", [rows[0].title, rows[0].useTitle, rows[1].title, rows[1].useTitle], ["起", true, "", false]);
+  eq("中身の指紋 h を持ち、中身が違えば違う", [typeof rows[0].h, rows[0].h !== rows[1].h], ["string", true]);
   eq("領域は中心が入っている一番小さいもの。中の付箋は親と同じ", rows.map((r) => r.zone), ["第1章", "全体", "全体", "全体", "全体", "全体"]);
   eq("タグと色を持つ", [rows[1].tags, rows[1].color, rows[2].color], [["メイン", "重要度高"], 1, 2]);
   eq("画像などは持たない（行は文字だけ）", JSON.stringify(rows).includes("base64"), false);
@@ -36,7 +39,7 @@ const B2 = { id: "b2", title: "設定メモ", nextNum: 2, notes: [N("m1", 1, 0, 
 {
   const items = [{ id: "1", text: "古い", tags: [], color: 5, area: "" }, { id: "2", title: "題", text: "新しい", tags: ["伏線1"], color: 0, area: "キャラ案" }];
   const rows = localRows(items);
-  eq("新しいものが上。見出し・まとめ先（zone）", rows.map((r) => [r.id, r.heading, r.zone]), [["2", "題", "キャラ案"], ["1", "古い", ""]]);
+  eq("新しいものが上。見出し（タイトルだけ）・まとめ先（zone）", rows.map((r) => [r.id, r.heading, r.zone]), [["2", "題", "キャラ案"], ["1", "", ""]]);
   eq("元の並びは変えない", items.map((i) => i.id), ["1", "2"]);
 }
 
