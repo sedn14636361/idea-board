@@ -161,11 +161,34 @@ function collectDescendants(id, byParent, acc = []) {
 // つかむためのすき間 BAR_GRAB を残す。幅が変わったら（大きさの変更・開閉）ResizeObserver で測り直す
 const BAR_GAP = 4, BAR_GRAB = 16;
 // 操作列のボタン（6.17.0）: 薄い背景色の平らな四角。押せることが分かるように、今までより大きく
+// 6.20.0: すべて 22×22 の正方形。中身は線画のアイコン（BarIcon）で、色は文字と同じ #3E3A33 にそろえる
 const BAR_BTN = {
   border: "none", borderRadius: 5, cursor: "pointer", background: "rgba(62,58,51,.1)", color: "#3E3A33",
-  height: 22, minWidth: 22, padding: "0 5px", fontSize: 12, fontWeight: 700, lineHeight: 1, whiteSpace: "nowrap",
+  width: 22, height: 22, padding: 0, fontSize: 12, fontWeight: 700, lineHeight: 1, whiteSpace: "nowrap",
   display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxSizing: "border-box",
+  position: "relative",
 };
+// 操作列のアイコン（6.20.0）。24 の格子・線の太さ 2.2・端は丸。色は currentColor（ボタンの color）
+const BAR_ICONS = {
+  title: <path d="M5 6h14M12 6v13" />,
+  open: <path d="M9 6l6 6-6 6" />,
+  close: <path d="M6 9l6 6 6-6" />,
+  side: <><rect x="3" y="6" width="9" height="12" rx="2" /><path d="M18 8v8M14 12h8" /></>,
+  copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 5.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h.5" /></>,
+  link: <g transform="rotate(-45 12 12)"><rect x="2.5" y="8.5" width="11" height="7" rx="3.5" /><rect x="10.5" y="8.5" width="11" height="7" rx="3.5" /></g>,
+  remove: <path d="M6 6l12 12M18 6L6 18" />,
+  more: <g fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></g>,
+};
+function BarIcon({ name, size = 14 }) {
+  return (
+    <svg data-icon={name} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"
+      style={{ display: "block", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round", pointerEvents: "none" }}>
+      {BAR_ICONS[name]}
+    </svg>
+  );
+}
+// 反転（オンのとき）: 同じ色の地に白っぽい線
+const BAR_ON = { background: "#3E3A33", color: "#F6F2E9" };
 function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick, children }) {
   const rowRef = useRef(null), leadRef = useRef(null), lRef = useRef(null), rRef = useRef(null);
   const need = useRef(0);
@@ -205,9 +228,9 @@ function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick,
           data-toolmenu
           title="ほかの操作"
           onClick={onMenu}
-          style={{ ...BAR_BTN, fontSize: 13, ...(menuOpen ? { background: "rgba(62,58,51,.25)" } : {}) }}
+          style={{ ...BAR_BTN, ...(menuOpen ? { background: "rgba(62,58,51,.25)" } : {}) }}
         >
-          ⋯
+          <BarIcon name="more" />
         </button>
       )}
       {fold && menuOpen && (
@@ -225,7 +248,7 @@ function NoteBar({ hidden, lead, toolsL, toolsR, menu, menuOpen, onMenu, onPick,
               onClick={() => onPick(m.run)}
               style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", border: "none", borderRadius: 5, background: "transparent", color: m.key === "remove" ? "#B0483C" : "#3E3A33", fontSize: 12, fontWeight: 700, padding: "5px 8px", cursor: "pointer", whiteSpace: "nowrap" }}
             >
-              <span style={{ width: 22, textAlign: "center", flexShrink: 0 }}>{m.icon}</span>
+              <span style={{ width: 22, display: "inline-flex", justifyContent: "center", flexShrink: 0 }}><BarIcon name={m.icon} /></span>
               {m.label}
             </button>
           ))}
@@ -3581,18 +3604,24 @@ export default function IdeaBoard() {
               data-nodrag
               title={n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う"}
               onClick={() => updateNote(n.id, { useTitle: !n.useTitle })}
-              style={{ ...BAR_BTN, fontSize: 11, ...(n.useTitle ? { background: "rgba(62,58,51,.7)", color: "#F6F2E9" } : { color: "rgba(62,58,51,.6)" }) }}
+              style={{ ...BAR_BTN, ...(n.useTitle ? BAR_ON : {}) }}
             >
-              T
+              <BarIcon name="title" />
             </button>
             {canNest && (
               <button
                 data-nodrag
                 title={isExpanded ? "中のボードをしまう" : "中のボードを開く"}
                 onClick={() => updateNote(n.id, { expanded: !n.expanded })}
-                style={{ ...BAR_BTN, fontSize: 11, ...(descendants > 0 ? { background: "rgba(62,58,51,.2)" } : {}) }}
+                style={BAR_BTN}
               >
-                {isExpanded ? "▾" : `▸${descendants > 0 ? descendants : ""}`}
+                <BarIcon name={isExpanded ? "close" : "open"} />
+                {/* 中の付箋の枚数は角の小さな数字で（ボタンを正方形のまま保つため） */}
+                {!isExpanded && descendants > 0 && (
+                  <span data-nestcount style={{ position: "absolute", right: -4, top: -4, minWidth: 12, height: 12, borderRadius: 6, background: "#3E3A33", color: "#F6F2E9", fontSize: 8.5, fontWeight: 700, lineHeight: "12px", textAlign: "center", padding: "0 2px", boxSizing: "border-box" }}>
+                    {descendants}
+                  </span>
+                )}
               </button>
             )}
           </>}
@@ -3602,9 +3631,9 @@ export default function IdeaBoard() {
               data-sidenote
               title="右に同じ色・タグの付箋を作って線でつなぐ"
               onClick={() => addSideNote(n)}
-              style={{ ...BAR_BTN, fontSize: 11 }}
+              style={BAR_BTN}
             >
-              ＋→
+              <BarIcon name="side" />
             </button>
             <button
               data-nodrag
@@ -3613,7 +3642,7 @@ export default function IdeaBoard() {
               onClick={() => { bringToFront(n.id); setCopyMenuFor(copyMenuFor === n.id ? null : n.id); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null); }}
               style={BAR_BTN}
             >
-              ⧉
+              <BarIcon name="copy" />
             </button>
             <button
               data-nodrag
@@ -3621,7 +3650,7 @@ export default function IdeaBoard() {
               onClick={() => setConnectFrom(selected ? null : n.id)}
               style={{ ...BAR_BTN, ...(selected ? { background: "rgba(176,72,60,.3)" } : {}) }}
             >
-              🔗
+              <BarIcon name="link" />
             </button>
             <button
               data-nodrag
@@ -3629,19 +3658,19 @@ export default function IdeaBoard() {
               onClick={() => removeNote(n.id)}
               style={BAR_BTN}
             >
-              ✕
+              <BarIcon name="remove" />
             </button>
           </>}
           menuOpen={toolMenuFor === n.id}
           onMenu={() => { bringToFront(n.id); setToolMenuFor(toolMenuFor === n.id ? null : n.id); setColorMenuFor(null); setTagMenuFor(null); setQuoteMenuFor(null); setCopyMenuFor(null); }}
           onPick={(run) => { setToolMenuFor(null); run(); }}
           menu={[
-            { key: "title", icon: "T", label: n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う", run: () => updateNote(n.id, { useTitle: !n.useTitle }) },
-            canNest && { key: "nest", icon: isExpanded ? "▾" : "▸", label: isExpanded ? "中のボードをしまう" : `中のボードを開く${descendants > 0 ? `（${descendants}枚）` : ""}`, run: () => updateNote(n.id, { expanded: !n.expanded }) },
-            { key: "side", icon: "＋→", label: "右に付箋を作る", run: () => addSideNote(n) },
-            { key: "copy", icon: "⧉", label: "複製・コピー", run: () => { bringToFront(n.id); setCopyMenuFor(n.id); } },
-            { key: "link", icon: "🔗", label: selected ? "接続を解除" : "線でつなぐ", run: () => setConnectFrom(selected ? null : n.id) },
-            { key: "remove", icon: "✕", label: "剥がす", run: () => removeNote(n.id) },
+            { key: "title", icon: "title", label: n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う", run: () => updateNote(n.id, { useTitle: !n.useTitle }) },
+            canNest && { key: "nest", icon: isExpanded ? "close" : "open", label: isExpanded ? "中のボードをしまう" : `中のボードを開く${descendants > 0 ? `（${descendants}枚）` : ""}`, run: () => updateNote(n.id, { expanded: !n.expanded }) },
+            { key: "side", icon: "side", label: "右に付箋を作る", run: () => addSideNote(n) },
+            { key: "copy", icon: "copy", label: "複製・コピー", run: () => { bringToFront(n.id); setCopyMenuFor(n.id); } },
+            { key: "link", icon: "link", label: selected ? "接続を解除" : "線でつなぐ", run: () => setConnectFrom(selected ? null : n.id) },
+            { key: "remove", icon: "remove", label: "剥がす", run: () => removeNote(n.id) },
           ].filter(Boolean)}
         >
           {colorMenuFor === n.id && (() => { const withMemo = settings.showColorNotes !== false; return (
@@ -4256,6 +4285,8 @@ export default function IdeaBoard() {
         @keyframes pop { from { transform: scale(.92); opacity: 0 } to { transform: scale(1); opacity: 1 } }
         @media (prefers-reduced-motion: reduce) { .note-enter { animation: none } }
         textarea:focus, input:focus { outline: none }
+        /* 入力例の文字（6.20.0）: 文字の色の 38%（Material Design の入力例と同じ濃さ）。地が暗い欄でも文字色に合わせて薄くなる */
+        input::placeholder, textarea::placeholder { color: currentColor; opacity: .38 }
         button { font-family: inherit }
         button, input, select, textarea { -webkit-app-region: no-drag }
         .board-tabs::-webkit-scrollbar { height: 5px }
@@ -7030,9 +7061,9 @@ export default function IdeaBoard() {
       {startOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200002, background: "rgba(40,35,25,.55)", display: "grid", placeItems: "center" }}>
           <div style={{ background: "#FFFDF6", borderRadius: 12, padding: "22px 24px", width: "min(420px, 92vw)", maxHeight: "84vh", overflowY: "auto", boxShadow: "0 12px 34px rgba(30,25,15,.4)", color: "#3E3A33" }}>
-            <strong style={{ fontSize: 16, display: "block", marginBottom: 3 }}>IdeaBoard</strong>
+            <strong style={{ fontSize: 16, display: "block", marginBottom: 3 }}>IdeaBoard<span style={{ fontSize: 10.5, color: "#9C9587", fontWeight: 400, marginLeft: 8 }}>版 {APP_VERSION}</span></strong>
             <div style={{ fontSize: 12, color: "#9C9587", marginBottom: 14 }}>
-              開くプロジェクトを選んで「開く」を押してください（ダブルクリックでも開けます）
+              開くプロジェクトを選んでください
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 14 }}>
