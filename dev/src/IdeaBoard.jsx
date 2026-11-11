@@ -7030,9 +7030,9 @@ export default function IdeaBoard() {
       {startOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200002, background: "rgba(40,35,25,.55)", display: "grid", placeItems: "center" }}>
           <div style={{ background: "#FFFDF6", borderRadius: 12, padding: "22px 24px", width: "min(420px, 92vw)", maxHeight: "84vh", overflowY: "auto", boxShadow: "0 12px 34px rgba(30,25,15,.4)", color: "#3E3A33" }}>
-            <strong style={{ fontSize: 16, display: "block", marginBottom: 3 }}>IdeaBoard</strong>
+            <strong style={{ fontSize: 16, display: "block", marginBottom: 3 }}>IdeaBoard<span style={{ fontSize: 10.5, color: "#9C9587", fontWeight: 400, marginLeft: 8 }}>版 {APP_VERSION}</span></strong>
             <div style={{ fontSize: 12, color: "#9C9587", marginBottom: 14 }}>
-              開くプロジェクトを選んで「開く」を押してください（ダブルクリックでも開けます）
+              開くプロジェクトを選んでください
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 14 }}>
