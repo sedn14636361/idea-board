@@ -42,7 +42,8 @@ const inside = (id) => pg.evaluate((id) => {
     .every((b) => { const q = b.getBoundingClientRect(); return q.left >= r.left - 0.5 && q.right <= r.right + 0.5; });
 }, id);
 const rowH = (id) => pg.evaluate((id) => document.querySelector(`[data-note="${id}"]`).firstElementChild.getBoundingClientRect().height, id);
-const items = () => pg.locator("[data-toolitem]").allTextContents();
+// 項目は「アイコン名:名前」（6.20.0 からアイコンは線画の svg。data-icon で確かめる）
+const items = () => pg.locator("[data-toolitem]").evaluateAll((els) => els.map((e) => (e.querySelector("[data-icon]")?.dataset.icon || "") + ":" + e.textContent));
 
 // 1) 幅ごとの出し入れ
 for (const id of ["w120", "w150", "w190", "w260", "P", "K"]) eq(`${id}: ボタンが付箋の枠の外に出ていない`, await inside(id), true);
@@ -53,7 +54,7 @@ eq("しまっても行の高さは同じ（本文の位置が変わらない）"
 
 // 2) メニューの中身（名前つき）
 await more("w120").click();
-eq("メニューには名前が出る", await items(), ["Tタイトル欄を使う", "▸中のボードを開く", "＋→右に付箋を作る", "⧉複製・コピー", "🔗線でつなぐ", "✕剥がす"]);
+eq("メニューには名前が出る", await items(), ["title:タイトル欄を使う", "open:中のボードを開く", "side:右に付箋を作る", "copy:複製・コピー", "link:線でつなぐ", "remove:剥がす"]);
 await pg.mouse.click(1500, 800);
 eq("外を押すとメニューが閉じる", await pg.locator("[data-toolitem]").count(), 0);
 
@@ -91,7 +92,7 @@ eq("このボードに複製: 1枚増える（複製は24ずれて重なるの�
 await pg.mouse.click(1500, 800);
 
 await more("K").click();
-eq("中の付箋のメニュー", await items(), ["Tタイトル欄を使う", "▸中のボードを開く", "＋→右に付箋を作る", "⧉複製・コピー", "🔗線でつなぐ", "✕剥がす"]);
+eq("中の付箋のメニュー", await items(), ["title:タイトル欄を使う", "open:中のボードを開く", "side:右に付箋を作る", "copy:複製・コピー", "link:線でつなぐ", "remove:剥がす"]);
 await pg.locator('[data-toolitem="remove"]').click();
 eq("剥がす: 中の付箋が剥がれる（✕ と同じく確認は出ない）", (await saved()).notes.some((n) => n.id === "K"), false);
 

@@ -851,6 +851,8 @@ export default function MobileQuickAdd() {
         @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap');
         * { -webkit-tap-highlight-color: transparent; box-sizing: border-box }
         textarea:focus, input:focus { outline: none }
+        /* 入力例の文字（6.20.0）: 文字の色の 38%（PC 版と同じ） */
+        input::placeholder, textarea::placeholder { color: currentColor; opacity: .38 }
         button { font-family: inherit }
       `}</style>
 
