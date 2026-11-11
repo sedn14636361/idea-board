@@ -63,7 +63,7 @@ await more("w120").click();
 await pg.locator('[data-toolitem="title"]').click();
 eq("タイトル欄を使う: タイトル欄が出て、メニューは閉じる", [await N("w120").locator('input[placeholder="タイトル"]').count(), await pg.locator("[data-toolitem]").count()], [1, 0]);
 await more("w120").click();
-eq("タイトル欄を使っているときは「やめる」になる", (await items())[0], "Tタイトル欄をやめる");
+eq("タイトル欄を使っているときは「やめる」になる", (await items())[0], "title:タイトル欄をやめる");
 await pg.locator('[data-toolitem="nest"]').click();
 eq("中のボードを開く: 開いて広くなり、ボタンが操作列に戻る", [(await saved()).notes.find((n) => n.id === "w120").expanded, await more("w120").count(), await inside("w120")], [true, 0, true]);
 await N("w120").locator('button[title="中のボードをしまう"]').first().click();
