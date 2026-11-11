@@ -399,6 +399,74 @@ export async function projectPullSplit(conf, id) {
   return null;
 }
 
+// スマホ版から、パソコンのボードの付箋1枚を直す（6.21.0）。
+//   1. 目次とそのボードのかけらを読み、付箋を探す（無ければ { ok:false, reason:"gone" }）
+//   2. check(note) が false（スマホで読んだあとにパソコンで直された）なら書かずに { ok:false, reason:"changed", note }
+//   3. change(note) で直した付箋に差し替えたボードを、**新しい名前の**かけらに書く（ほかのボードのかけらには触らない）
+//   4. 目次を「読んだときの更新時刻のままなら」の条件つきで書き換える。入れ違ったら書いたかけらを消し、1. から読み直す（最大3回）
+//   5. 切り替えたあとで、そのボードの古いかけらを消す
+// パソコンは目次の更新時刻が変わったことで気づき、いつもの同期で読み込む（パソコンでも直していれば競合として尋ねる）。
+// 旧形式（payload に丸ごと）は { ok:false, reason:"old" }。
+export async function projectEditNote(conf, pid, boardId, noteId, change, { check = null, device = "" } = {}) {
+  const token = await signIn(conf);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const head = await getDoc(conf, token, pid);
+    if (!head) return { ok: false, reason: "gone" };
+    const f = head.fields || {};
+    if (f.payload?.stringValue || f.shape?.stringValue !== "split") return { ok: false, reason: "old" };
+    let meta;
+    try { meta = JSON.parse(f.meta?.stringValue || "{}"); } catch (e) { return { ok: false, reason: "old" }; }
+    const list = meta.boards || [];
+    const m = list.find((x) => x.id === boardId);
+    if (!m) return { ok: false, reason: "gone" };
+    const got = await Promise.all(
+      Array.from({ length: m.parts }, (_, i) => getDoc(conf, token, partId(pid, m.id, i, m.v || "")))
+    );
+    if (got.some((g) => !g)) continue;           // 読んでいる間に切り替わった。目次から読み直す
+    let board;
+    try { board = JSON.parse(got.map((g) => g.fields?.part?.stringValue || "").join("")); } catch (e) { return { ok: false, reason: "old" }; }
+    const note = (board.notes || []).find((n) => n.id === noteId);
+    if (!note) return { ok: false, reason: "gone" };
+    if (check && !check(note)) return { ok: false, reason: "changed", note, board };
+
+    const nextBoard = { ...board, notes: board.notes.map((n) => (n.id === noteId ? change(n) : n)) };
+    const body = JSON.stringify(nextBoard);
+    const v = newVersion();
+    const parts = splitByBytes(body);
+    const written = [];
+    const cleanup = async () => { for (const id of written) await delDoc(conf, token, id); };
+    try {
+      for (let i = 0; i < parts.length; i++) {
+        const id = partId(pid, m.id, i, v);
+        written.push(id);
+        const r = await putDoc(conf, token, id, { part: { stringValue: parts[i] } }, { exists: false });
+        if (!r.ok) { await cleanup(); return { ok: false, reason: "net" }; }
+      }
+    } catch (e) {
+      await cleanup().catch(() => {});
+      throw e;
+    }
+    // 目次はこのボードの行だけ差し替える（ほかのボードの行・開いていたボード・名前はそのまま）
+    const nextMeta = { ...meta, boards: list.map((x) => (x.id === m.id ? { ...x, parts: parts.length, h: hashOf(body), v } : x)) };
+    const savedAt = Date.now();
+    const w = await putDoc(conf, token, pid, {
+      shape: { stringValue: "split" },
+      meta: { stringValue: JSON.stringify(nextMeta) },
+      name: { stringValue: f.name?.stringValue || "" },
+      device: { stringValue: device },
+      savedAt: { integerValue: String(savedAt) },
+    }, { updateTime: head.updateTime }).catch(() => ({ ok: false }));
+    if (!w.ok) {
+      await cleanup().catch(() => {});
+      if (w.status === 400 || w.status === 409 || w.status === 412) continue;   // 入れ違い。読み直す
+      return { ok: false, reason: "net" };
+    }
+    for (let i = 0; i < m.parts; i++) await delDoc(conf, token, partId(pid, m.id, i, m.v || ""));
+    return { ok: true, board: nextBoard, updateTime: w.updateTime };
+  }
+  return { ok: false, reason: "busy" };
+}
+
 // ボード1枚だけを読む（スマホ版の「今ある付箋」用。6.16.0）。ほかのボードのかけら（画像など）は読まない。
 // boardId が無い・見つからないときは、パソコンで開いていたボード（無ければ先頭）。
 // 戻り値: { name, updateTime, boards: [{ id, title }], boardId, board }。プロジェクトが無ければ null。

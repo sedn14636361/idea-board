@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import {
   loadCloudConf, saveCloudConf, cloudTest, cloudPush, loadCloudDraft, saveCloudDraft, projectList,
-  tagsPush, tagsPull, projectPeek,
+  tagsPush, tagsPull, projectPeek, projectEditNote,
 } from "./cloud.js";
+import { noteContentHash } from "./incoming.js";
 import { boardRows, localRows, filterRows } from "./peek.js";
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { APP_VERSION } from "./version.js";
@@ -88,7 +89,10 @@ export default function MobileQuickAdd() {
   const [areaEditOpen, setAreaEditOpen] = useState(false);
   const [picked, setPicked] = useState([]);   // 選んだ付箋のID
   // 直している付箋 { id, target, draft }。draft は「書く」に書きかけていた内容（終わったら戻す）
+  // パソコンのボードの付箋を直しているときは { pc: { pid, boardId, noteId, num, h }, target, draft }（6.21.0）
   const [editing, setEditing] = useState(null);
+  const [pcSaving, setPcSaving] = useState(false);  // パソコンの付箋を保存している途中
+  const [pcMsg, setPcMsg] = useState("");           // パソコンの付箋を保存できなかったときの知らせ（直すのをやめるまで出す）
   const [projects, setProjects] = useState([]);     // クラウドにあるプロジェクト
   const [target, setTarget] = useState(null);       // 送り先 {id, name}
   const [targetOpen, setTargetOpen] = useState(false);
@@ -533,6 +537,7 @@ export default function MobileQuickAdd() {
   const openEdit = (i) => {
     // 書きかけの内容は控えておき、終わったら戻す（すでに直している途中なら、その控えを引き継ぐ）
     const draft = editing ? editing.draft : { text, title, useTitle, color, tags, area };
+    setPcMsg("");
     setEditing({
       id: i.id,
       target: i.targetProjectId ? { id: i.targetProjectId, name: i.targetProjectName || "" } : null,
@@ -549,15 +554,76 @@ export default function MobileQuickAdd() {
 
   const closeEdit = () => {
     const d = editing?.draft;
+    const wasPc = !!editing?.pc;
     setEditing(null);
+    setPcMsg("");
     if (d) {
       setText(d.text); setTitle(d.title); setUseTitle(d.useTitle);
       setColor(d.color); setTags(d.tags); setArea(d.area);
     }
-    setTab("list");
+    setTab(wasPc ? "write" : "list");   // パソコンの付箋は「書く」の一覧から開いたので、そこへ戻る
+  };
+
+  // --- パソコンのボードの付箋を直す（6.21.0）。保存するとサーバー上のそのボードをすぐ書き換える ---
+  // タイトルは付箋のタイトルそのもの（無ければ空。本文の1行目を入れない）
+  const openPcEdit = (r) => {
+    const tg = curTarget;
+    if (!tg || !peekMine?.boardId || !r.h) return;
+    const draft = editing ? editing.draft : { text, title, useTitle, color, tags, area };
+    setEditing({ pc: { pid: tg.id, boardId: peekMine.boardId, noteId: r.id, num: r.num, h: r.h }, target: tg, draft });
+    setPcMsg("");
+    setText(r.text || "");
+    setTitle(r.title || "");
+    setUseTitle(!!r.useTitle);
+    setColor(r.color ?? DEFAULT_COLOR);
+    setTags(Array.isArray(r.tags) ? r.tags : []);
+    setTab("write");
+    try { window.scrollTo?.(0, 0); document.querySelector("[data-write-scroll]")?.scrollTo?.({ top: 0 }); } catch (e) { /* 動かなくても直せる */ }
+  };
+  // 保存したボードを一覧の控えにも入れる（読み直さなくても、直した内容がすぐ見える）
+  const putPeekBoard = (pid, boardId, board) => {
+    setPeekPc((prev) => {
+      if (!prev || prev.pid !== pid) return prev;
+      const next = { ...prev, byBoard: { ...prev.byBoard, [boardId]: { rows: boardRows(board), at: Date.now() } } };
+      try { localStorage.setItem(PEEK_CACHE_KEY, JSON.stringify(next)); } catch (e) { /* 入りきらなければ控えないだけ */ }
+      return next;
+    });
+  };
+  const savePcEdit = async () => {
+    const e = editing?.pc;
+    if (!e || pcSaving || (!text.trim() && !title.trim())) return;
+    const next = { title: title.trim(), useTitle, text, color, tags };
+    setPcSaving(true); setPcMsg("");
+    try {
+      const r = await projectEditNote(cloud, e.pid, e.boardId, e.noteId, (n) => ({ ...n, ...next }), {
+        check: (n) => noteContentHash(n) === e.h,   // スマホで読んだときのままか（パソコンで直されていたら書かない）
+        device: "スマホ",
+      });
+      if (r.ok) {
+        putPeekBoard(e.pid, e.boardId, r.board);
+        closeEdit();
+        say("パソコンのボードに保存しました");
+      } else if (r.reason === "changed") {
+        // もう一度「保存」したら、この内容で上書きする
+        setEditing((x) => (x?.pc ? { ...x, pc: { ...x.pc, h: noteContentHash(r.note) } } : x));
+        putPeekBoard(e.pid, e.boardId, r.board);
+        setPcMsg("パソコンで変更されていました。もう一度「保存」すると、この内容で上書きします");
+      } else if (r.reason === "gone") {
+        setPcMsg("この付箋はパソコンで剥がされています");
+      } else if (r.reason === "old") {
+        setPcMsg("このプロジェクトは、パソコンで一度開いて保存すると直せます");
+      } else {
+        setPcMsg("保存できませんでした。電波のある所で、もう一度「保存」してください");
+      }
+    } catch (err) {
+      setPcMsg("保存できませんでした。電波のある所で、もう一度「保存」してください");
+    } finally {
+      setPcSaving(false);
+    }
   };
 
   const saveEdit = () => {
+    if (editing?.pc) { savePcEdit(); return; }
     if (!editing || (!text.trim() && !title.trim())) return;
     const old = items.find((i) => i.id === editing.id);
     if (!old) { closeEdit(); return; }
@@ -816,14 +882,17 @@ export default function MobileQuickAdd() {
   // つなげて書いている付箋の、小さい表示（押すとその付箋へ移る。✕ で外す）
   const threadCard = (d, key, onOpen, onRemove) => {
     const col = COLORS[d.color] || COLORS[DEFAULT_COLOR];
-    const head = (d.useTitle && (d.title || "").trim()) || (d.text || "").split("\n").find((l) => l.trim()) || "";
+    // 見出しはタイトルだけ。無ければ本文をそのまま（太字にしない。6.21.0）
+    const ttl = (d.useTitle && (d.title || "").trim()) || "";
+    const body = (d.text || "").trim().replace(/\s+/g, " ");
+    const head = ttl || body;
     return (
       <div key={key} data-thread-card={key} style={{ display: "flex", flexDirection: "column" }}>
         <div
           onClick={onOpen}
           style={{ display: "flex", alignItems: "center", gap: 8, background: col.bg, borderLeft: `5px solid ${col.edge}`, borderRadius: 6, padding: "9px 6px 9px 10px", cursor: "pointer", boxShadow: "1px 2px 5px rgba(60,50,30,.12)" }}
         >
-          <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: head ? 700 : 400, color: head ? "#3E3A33" : "#9C9587", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: ttl ? 700 : 400, color: head ? "#3E3A33" : "#9C9587", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {head || "（まだ書いていません）"}
           </span>
           <button
@@ -924,7 +993,7 @@ export default function MobileQuickAdd() {
 
       {/* 書く */}
       {tab === "write" && (
-        <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+        <div data-write-scroll style={{ flex: 1, overflowY: "auto", padding: 14 }}>
           {/* つなげて書いている付箋のうち、今の付箋より前のもの（押すと戻って直せる） */}
           {!editing && before.map((d, i) => (
             <div key={"b" + i}>
@@ -1092,7 +1161,9 @@ export default function MobileQuickAdd() {
                           {rows.map((r) => {
                             const col = COLORS[r.color] || COLORS[DEFAULT_COLOR];
                             const open = peekRow === r.id;
-                            const body = r.text.trim() !== r.heading.trim() ? r.text : "";
+                            // 見出しはタイトルだけ（無ければ出さず、本文をそのまま出す。6.21.0）
+                            const body = r.text;
+                            const canEdit = pc && !!r.h && !!cloud && !editing?.pc;
                             return (
                               <div
                                 key={r.id}
@@ -1105,19 +1176,28 @@ export default function MobileQuickAdd() {
                               >
                                 <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
                                   {r.num > 0 && <span style={{ fontSize: 10.5, fontWeight: 700, color: "rgba(62,58,51,.6)", flexShrink: 0 }}>#{r.num}</span>}
-                                  <span style={{
-                                    flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 700, lineHeight: 1.45, wordBreak: "break-word",
-                                    ...(open ? {} : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
-                                  }}>
-                                    {r.heading || "（無題）"}
-                                  </span>
+                                  {r.heading ? (
+                                    <span data-peek-title style={{
+                                      flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 700, lineHeight: 1.45, wordBreak: "break-word",
+                                      ...(open ? {} : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+                                    }}>
+                                      {r.heading}
+                                    </span>
+                                  ) : (
+                                    <span data-peek-body style={{
+                                      flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.55, color: body.trim() ? "#3E3A33" : "#9C9587", wordBreak: "break-word",
+                                      ...(open ? { whiteSpace: "pre-wrap" } : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+                                    }}>
+                                      {body.trim() ? (open ? body : body.trim().replace(/\s+/g, " ")) : "（空）"}
+                                    </span>
+                                  )}
                                 </div>
-                                {body && (
-                                  <div style={{
+                                {r.heading && body.trim() && (
+                                  <div data-peek-body style={{
                                     fontSize: 12.5, lineHeight: 1.55, color: "#5A554B", marginTop: 2, wordBreak: "break-word",
                                     ...(open ? { whiteSpace: "pre-wrap" } : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
                                   }}>
-                                    {open ? body : body.replace(/\s+/g, " ")}
+                                    {open ? body : body.trim().replace(/\s+/g, " ")}
                                   </div>
                                 )}
                                 {(r.tags.length > 0 || r.zone) && (
@@ -1126,6 +1206,17 @@ export default function MobileQuickAdd() {
                                     {r.tags.map((t) => (
                                       <span key={t} style={{ fontSize: 10.5, fontWeight: 700, borderRadius: 8, padding: "0 7px", background: "rgba(255,253,246,.9)", color: tagColorOf(t) }}>{t}</span>
                                     ))}
+                                  </div>
+                                )}
+                                {open && canEdit && (
+                                  <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+                                    <button
+                                      data-peek-edit
+                                      onClick={(ev) => { ev.stopPropagation(); openPcEdit(r); }}
+                                      style={{ border: "none", borderRadius: 8, background: "#3E3A33", color: "#F6F2E9", fontSize: 12.5, fontWeight: 700, padding: "6px 16px", cursor: "pointer" }}
+                                    >
+                                      直す
+                                    </button>
                                   </div>
                                 )}
                               </div>
@@ -1140,8 +1231,8 @@ export default function MobileQuickAdd() {
             );
           })()}
 
-          {/* 送り先のプロジェクト */}
-          {cloud && cloudUsable && (
+          {/* 送り先のプロジェクト（パソコンの付箋を直している間は、その付箋のプロジェクトに決まっているので出さない） */}
+          {cloud && cloudUsable && !editing?.pc && (
             <div
               onClick={() => { setTargetOpen(true); refreshProjects(); }}
               style={{
@@ -1158,6 +1249,43 @@ export default function MobileQuickAdd() {
             </div>
           )}
 
+          {/* 入れる（直しているときは 保存／やめる）。送り先と「色・タグ・まとめ先を戻す」の間（6.21.0。それまでは画面の下に浮かせていた） */}
+          {editing?.pc && (
+            <div data-pc-editing style={{ fontSize: 12, color: "#6B665C", marginBottom: 6 }}>
+              パソコンのボードの{editing.pc.num > 0 ? ` #${editing.pc.num} ` : "付箋"}を直しています
+            </div>
+          )}
+          {pcMsg && (
+            <div data-pc-msg style={{ fontSize: 12.5, color: "#B0483C", background: "rgba(176,72,60,.08)", borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
+              {pcMsg}
+            </div>
+          )}
+          <div data-add-row style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            {editing && (
+              <button
+                onClick={closeEdit}
+                style={{
+                  flex: "0 0 32%", border: "1px solid #C9C2B2", borderRadius: 12, background: "#FFFDF6",
+                  color: "#3E3A33", fontSize: 16, fontWeight: 700, padding: "15px 0", cursor: "pointer",
+                }}
+              >
+                やめる
+              </button>
+            )}
+            <button
+              data-add
+              onClick={editing ? saveEdit : add}
+              disabled={editing ? pcSaving || (!text.trim() && !title.trim()) : !canAdd}
+              style={{
+                flex: 1, border: "none", borderRadius: 12,
+                background: (editing ? !pcSaving && (text.trim() || title.trim()) : canAdd) ? "#3E3A33" : "#C9C2B2",
+                color: "#F6F2E9", fontSize: 16, fontWeight: 700, padding: "15px 0", cursor: "pointer",
+              }}
+            >
+              {editing ? (pcSaving ? "保存しています…" : "保存") : "＋ アイデアボックスに入れる"}
+            </button>
+          </div>
+
           {/* 色・タグなどを最初に戻す */}
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
             <button
@@ -1173,7 +1301,8 @@ export default function MobileQuickAdd() {
             </button>
           </div>
 
-          {/* まとめ先（PCで領域になる） */}
+          {/* まとめ先（PCで領域になる）。パソコンの付箋を直している間は使わない（もうボードの上にあるため） */}
+          {!editing?.pc && (<>
           <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
             <span style={{ fontSize: 11, color: "#9C9587", flex: 1 }}>まとめ先（PCで囲みになります）</span>
             <button
@@ -1215,6 +1344,7 @@ export default function MobileQuickAdd() {
               </span>
             )}
           </div>
+          </>)}
 
           {/* 色 */}
           <div style={{ fontSize: 11, color: "#9C9587", marginBottom: 6 }}>色</div>
@@ -1222,6 +1352,7 @@ export default function MobileQuickAdd() {
             {COLORS.map((col, i) => (
               <button
                 key={col.name}
+                data-color={i}
                 onClick={() => setColor(i)}
                 style={{
                   width: 34, height: 34, borderRadius: "50%", background: col.bg, padding: 0, cursor: "pointer",
@@ -1264,7 +1395,29 @@ export default function MobileQuickAdd() {
               </div>
             </div>
           ))}
-          <div style={{ height: 80 }} />
+          {/* 直している付箋に付いていて、タグの一覧に無いタグ（パソコンで付けたものなど）。消さずに残し、押すと外せる */}
+          {editing && (() => {
+            const known = new Set(catalog.flatMap((c) => c.tags || []));
+            const extra = tags.filter((t) => !known.has(t));
+            if (extra.length === 0) return null;
+            return (
+              <div data-extra-tags style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#6B665C", marginBottom: 4 }}>一覧に無いタグ</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {extra.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTags((ts) => ts.filter((x) => x !== t))}
+                      style={{ border: "none", borderRadius: 14, padding: "6px 12px", fontSize: 13, cursor: "pointer", fontWeight: 700, background: "#6B665C", color: "#FFFDF6" }}
+                    >
+                      {t} ✕
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+          <div style={{ height: "calc(24px + var(--safe-b, 0px))" }} />
         </div>
       )}
 
@@ -1479,36 +1632,6 @@ export default function MobileQuickAdd() {
         </div>
         );
       })()}
-
-      {/* 追加ボタン（書くタブのみ） */}
-      {tab === "write" && (
-        <div style={{ position: "absolute", left: 14, right: 14, bottom: 16, display: "flex", gap: 8 }}>
-          {editing && (
-            <button
-              onClick={closeEdit}
-              style={{
-                flex: "0 0 32%", border: "1px solid #C9C2B2", borderRadius: 12, background: "#FFFDF6",
-                color: "#3E3A33", fontSize: 16, fontWeight: 700, padding: "15px 0",
-                cursor: "pointer", boxShadow: "0 4px 14px rgba(30,25,15,.18)",
-              }}
-            >
-              やめる
-            </button>
-          )}
-          <button
-            onClick={editing ? saveEdit : add}
-            disabled={editing ? !text.trim() && !title.trim() : !canAdd}
-            style={{
-              flex: 1, border: "none", borderRadius: 12,
-              background: (editing ? text.trim() || title.trim() : canAdd) ? "#3E3A33" : "#C9C2B2",
-              color: "#F6F2E9", fontSize: 16, fontWeight: 700, padding: "15px 0",
-              cursor: "pointer", boxShadow: "0 4px 14px rgba(30,25,15,.3)",
-            }}
-          >
-            {editing ? "保存" : "＋ アイデアボックスに入れる"}
-          </button>
-        </div>
-      )}
 
       {/* 送り先のプロジェクトを選ぶ */}
       {targetOpen && (
