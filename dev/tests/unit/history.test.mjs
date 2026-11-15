@@ -15,6 +15,9 @@ const B2 = { id: "B2", title: "ボード2", nextNum: 1, notes: [], edges: [] };
 const S = (boards, cur = "B1") => ({ boards, currentBoardId: cur });
 const s0 = S([B1, B2]);
 const withNotes = (b, notes) => ({ ...b, notes });
+// 同じ状態か（6.22.0 から戻す先は控えそのものではなく、文章を今に合わせて作り直した状態なので、中身で比べる。参照が同じなら中の物も同じ）
+const same = (a, b) => !!a && !!b && a.currentBoardId === b.currentBoardId && a.boards.length === b.boards.length &&
+  a.boards.every((x, i) => x === b.boards[i] || JSON.stringify(x) === JSON.stringify(b.boards[i]));
 
 // ---- 変わったかどうか ----
 eq("同じ参照は同じ", sameBoards(s0.boards, s0.boards), true);
@@ -38,11 +41,11 @@ eq("付箋の中身の違いが無い項目を足しても（undefined）変わ�
   recordChange(h, s0, 1000, { boundary: true });
   eq("剥がしたあとは戻せる", canUndo(h, removed), true);
   const back = undoStep(h, removed);
-  eq("戻すと剥がす前の丸ごと（中の付箋・番号も）", back === s0, true);
+  eq("戻すと剥がす前の丸ごと（中の付箋・番号も）", same(back, s0), true);
   eq("戻したらやり直せる", canRedo(h, back), true);
   const again = redoStep(h, back);
-  eq("やり直すと剥がした状態", again === removed, true);
-  eq("やり直したあとはもう一度戻せる", undoStep(h, again) === s0, true);
+  eq("やり直すと剥がした状態", same(again, removed), true);
+  eq("やり直したあとはもう一度戻せる", same(undoStep(h, again), s0), true);
 }
 
 // ---- まとめ方 ----
@@ -68,7 +71,7 @@ eq("付箋の中身の違いが無い項目を足しても（undefined）変わ�
   const c = undoStep(h, b);
   eq("ドラッグ1回は（途中で止まっても）1手", c.boards[0].notes[0].x, 0);
   eq("それ以上は戻らない", undoStep(h, c), null);
-  eq("ドラッグ後の状態へやり直せる", redoStep(h, c) === afterDrag, true);
+  eq("ドラッグ後の状態へやり直せる", same(redoStep(h, c), afterDrag), true);
 }
 
 // ---- 押しただけ（前面に上げる）の手は積まない ----
@@ -90,7 +93,7 @@ eq("付箋の中身の違いが無い項目を足しても（undefined）変わ�
   recordChange(h, back, 10, { boundary: true });
   eq("戻したあとに変えたら、やり直せない（ボタン）", canRedo(h, s2), false);
   eq("戻したあとに変えたら、やり直せない（キー）", redoStep(h, s2), null);
-  eq("変えた分は戻せる", undoStep(h, s2) === back, true);
+  eq("変えた分は戻せる", same(undoStep(h, s2), back), true);
 }
 
 // ---- 上限 ----

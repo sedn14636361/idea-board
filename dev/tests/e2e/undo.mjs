@@ -76,13 +76,19 @@ eq("前提: 動いた", s2.notes.find((n) => n.id === "n1").x !== 100, true);
 await pg.keyboard.press("Control+z");
 eq("ドラッグ1回が1手で戻る", shape(await saved()), s0);
 
-// 3) ひと続きの入力は1手。入力欄の中の Ctrl+Z ではボードは戻らない
+// 3) 入力欄の外の Ctrl+Z は書いた文章を戻さない（6.22.0。ユーザー指定）。文章は入力欄の中の Ctrl+Z（ブラウザ）で戻す。
+//    入力欄の中の Ctrl+Z ではボードは戻らない
 await pg.locator('[data-note="n1"] textarea').first().click();
 await pg.keyboard.type("abc", { delay: 60 });
 await clickEmpty();
+const typed = shape(await saved());
 eq("前提: 入力した", (await saved()).notes.find((n) => n.id === "n1").text, "レモンabc");
 await pg.keyboard.press("Control+z");
-eq("入力した分がまとめて1手で戻る", shape(await saved()), s0);
+eq("入力欄の外の Ctrl+Z では書いた文章は戻らない（ほかも変わらない）", shape(await saved()), typed);
+await pg.locator('[data-note="n1"] textarea').first().click();
+for (let i = 0; i < 3; i++) await pg.keyboard.press("Control+z");
+eq("入力欄の中の Ctrl+Z で書いた文章だけが戻る", shape(await saved()), s0);
+await clickEmpty();
 await pg.locator('[data-note="n2"] button[title="剥がす（中身も一緒）"]').first().click();
 const s3 = shape(await saved());
 await pg.locator("button", { hasText: "☰" }).first().click();
