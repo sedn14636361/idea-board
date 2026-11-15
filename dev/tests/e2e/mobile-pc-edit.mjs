@@ -74,8 +74,9 @@ const titleBox = M.locator('input[placeholder="タイトル"]');
 eq("③: タイトルの無い付箋を直すとき、タイトル欄は空（1行目を入れない）", [await M.locator('input[type="checkbox"]').first().isChecked(), await titleBox.count()], [false, 0]);
 eq("②: 書く欄に本文が入る", await M.locator("textarea").first().inputValue(), "山場の案\n二行目");
 eq("②: 一覧に無いタグ（パソコンで付けた）も出て、消えない", await M.locator("[data-extra-tags] button").allInnerTexts(), ["自由タグ ✕"]);
-eq("②: 直している間は、まとめ先・送り先・つなげる「＋」は出さない",
-  [await M.getByText("まとめ先（PCで囲みになります）").count(), await M.getByText("送り先", { exact: true }).count(), await M.locator("[data-thread-add]").count()], [0, 0, 0]);
+// つなげる「＋」は 6.22.0 から出す（足した付箋は保存したときに右へつながって入る。試験 mobile-pc-add）
+eq("②: 直している間は、まとめ先・送り先は出さない（つなげる「＋」は出す）",
+  [await M.getByText("まとめ先（PCで囲みになります）").count(), await M.getByText("送り先", { exact: true }).count(), await M.locator("[data-thread-add]").count()], [0, 0, 1]);
 eq("②: ボタンは「やめる」「保存」", await M.locator("[data-add-row] button").allInnerTexts(), ["やめる", "保存"]);
 // 直す: タイトルを付ける・本文・色（そら）・タグ「伏線1」を足す
 await M.locator('input[type="checkbox"]').first().check();
