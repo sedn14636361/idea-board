@@ -407,7 +407,9 @@ export async function projectPullSplit(conf, id) {
 //   5. 切り替えたあとで、そのボードの古いかけらを消す
 // パソコンは目次の更新時刻が変わったことで気づき、いつもの同期で読み込む（パソコンでも直していれば競合として尋ねる）。
 // 旧形式（payload に丸ごと）は { ok:false, reason:"old" }。
-export async function projectEditNote(conf, pid, boardId, noteId, change, { check = null, device = "" } = {}) {
+// extend(board, noteId) を渡すと、直したあとのボードにさらに手を加えられる（つながる付箋を足す。6.22.0）。
+// 直した付箋と足した付箋は、同じ1回の書き込みで入る（片方だけ入ることは無い）。
+export async function projectEditNote(conf, pid, boardId, noteId, change, { check = null, device = "", extend = null } = {}) {
   const token = await signIn(conf);
   for (let attempt = 0; attempt < 3; attempt++) {
     const head = await getDoc(conf, token, pid);
@@ -429,7 +431,8 @@ export async function projectEditNote(conf, pid, boardId, noteId, change, { chec
     if (!note) return { ok: false, reason: "gone" };
     if (check && !check(note)) return { ok: false, reason: "changed", note, board };
 
-    const nextBoard = { ...board, notes: board.notes.map((n) => (n.id === noteId ? change(n) : n)) };
+    let nextBoard = { ...board, notes: board.notes.map((n) => (n.id === noteId ? change(n) : n)) };
+    if (extend) nextBoard = extend(nextBoard, noteId);
     const body = JSON.stringify(nextBoard);
     const v = newVersion();
     const parts = splitByBytes(body);

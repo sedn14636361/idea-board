@@ -9,6 +9,7 @@ import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.
 import { renumber, transferNotes } from "./notes.js";
 import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, rewriteHist, withoutBlankText, isBlankText } from "./history.js";
 import { snapToGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
+import { sidePlace, SIDE_GAP } from "./sidenote.js";
 import { incomingPlan, noteContentHash, chainsOf, layoutChains, linksOf } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -1259,6 +1260,24 @@ export default function IdeaBoard() {
     return () => clearInterval(id);
   }, [cloud, shareOpen]);
 
+  // 画面に戻ったとき（ウィンドウ・タブが見えるようになった／前に出た）にも、すぐ確かめる（6.22.0）。
+  // スマホで直してからパソコンを見たときに、60秒待たずに出るようにするため。読み取りは開いているプロジェクトの目次1件。
+  // 切り替えを続けても3秒に1回まで
+  const lastFocusCheck = useRef(0);
+  useEffect(() => {
+    if (!cloud) return;
+    const check = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastFocusCheck.current < 3000) return;
+      lastFocusCheck.current = now;
+      reconcile(false);
+    };
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    return () => { document.removeEventListener("visibilitychange", check); window.removeEventListener("focus", check); };
+  }, [cloud]);
+
   // 「同期する」ボタン／サーバーに置き直す
   const pushProjectToCloud = async (pid) => {
     const p = projects.find((x) => x.id === pid);
@@ -1879,7 +1898,6 @@ export default function IdeaBoard() {
 
   // 付箋のすぐ右に、同じ色・タグの付箋を作って線でつなぐ（同じ親の中。右がふさがっていれば空くまで右へ）
   // 入れ子の中で親の枠からはみ出すときは、下に作る
-  const SIDE_GAP = 24;
   const addSideNote = (src) => {
     const newId = nextId();
     updateBoard((b) => {
@@ -1887,24 +1905,10 @@ export default function IdeaBoard() {
       const n = makeNote(0, 0, src.parentId, num);
       Object.assign(n, { id: newId, color: src.color, tags: [...(src.tags || [])], useTitle: !!src.useTitle, w: src.w, h: src.h });
       const gap = gridRef.current ? Math.max(GRID, snap(SIDE_GAP)) : SIDE_GAP;
-      const sizeOf = (m) => (m.expanded ? { w: m.ew, h: m.eh } : { w: m.w, h: m.h });
-      const sibs = b.notes.filter((m) => (m.parentId || null) === (src.parentId || null)).map((m) => ({ x: m.x, y: m.y, ...sizeOf(m) }));
-      const hits = (x, y) => sibs.find((r) => x < r.x + r.w && x + n.w > r.x && y < r.y + r.h && y + n.h > r.y);
-      const ss = sizeOf(src);
-      const place = (dx, dy) => {
-        let x = dx ? src.x + ss.w + gap : src.x, y = dy ? src.y + ss.h + gap : src.y;
-        if (gridRef.current) { x = snap(x); y = snap(y); }
-        for (let i = 0, r; i < 200 && (r = hits(x, y)); i++) {
-          if (dx) x = gridRef.current ? snap(r.x + r.w + gap) : r.x + r.w + gap;
-          else y = gridRef.current ? snap(r.y + r.h + gap) : r.y + r.h + gap;
-        }
-        return { x, y };
-      };
-      let pos = place(1, 0);
-      const parent = src.parentId && b.notes.find((m) => m.id === src.parentId);
-      if (parent && pos.x + n.w > parent.ew - 16) pos = place(0, 1); // 親の中のボードの幅（枠の余白を除く）
-      n.x = src.parentId ? Math.max(0, pos.x) : pos.x;
-      n.y = src.parentId ? Math.max(0, pos.y) : pos.y;
+      // 置き場所は src/sidenote.js（スマホ版の「直す」の「＋」と同じ計算）
+      const pos = sidePlace(b.notes, src, { w: n.w, h: n.h }, { gap, snap: gridRef.current ? snap : null });
+      n.x = pos.x;
+      n.y = pos.y;
       n.z = ++zRef.current;
       return { ...b, nextNum: num + 1, notes: [...b.notes, n], edges: [...(b.edges || []), { id: nextId(), from: src.id, to: newId }] };
     });

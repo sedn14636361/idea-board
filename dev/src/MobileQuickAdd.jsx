@@ -4,6 +4,7 @@ import {
   tagsPush, tagsPull, projectPeek, projectEditNote,
 } from "./cloud.js";
 import { noteContentHash } from "./incoming.js";
+import { appendSideNotes } from "./sidenote.js";
 import { boardRows, localRows, filterRows } from "./peek.js";
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { APP_VERSION } from "./version.js";
@@ -93,6 +94,9 @@ export default function MobileQuickAdd() {
   const [editing, setEditing] = useState(null);
   const [pcSaving, setPcSaving] = useState(false);  // パソコンの付箋を保存している途中
   const [pcMsg, setPcMsg] = useState("");           // パソコンの付箋を保存できなかったときの知らせ（直すのをやめるまで出す）
+  // パソコンの付箋を直している間、書く欄に出ているのがその付箋か（「＋」で足した付箋を書いているときは false。6.22.0）。
+  // つなげて書く並び（before / after）に入るときは、下書きに pcNote: true の印が付く
+  const [curPc, setCurPc] = useState(false);
   const [projects, setProjects] = useState([]);     // クラウドにあるプロジェクト
   const [target, setTarget] = useState(null);       // 送り先 {id, name}
   const [targetOpen, setTargetOpen] = useState(false);
@@ -466,8 +470,9 @@ export default function MobileQuickAdd() {
   };
 
   // ---- つなげて書く ----
-  const snapDraft = () => ({ text, title, useTitle, color, tags, area });
+  const snapDraft = () => ({ text, title, useTitle, color, tags, area, ...(curPc ? { pcNote: true } : {}) });
   const loadDraft = (d) => {
+    setCurPc(!!d.pcNote);
     setText(d.text || ""); setTitle(d.title || ""); setUseTitle(!!d.useTitle);
     setColor(Number.isInteger(d.color) && COLORS[d.color] ? d.color : DEFAULT_COLOR);
     setTags(Array.isArray(d.tags) ? d.tags : []); setArea(d.area || "");
@@ -476,6 +481,7 @@ export default function MobileQuickAdd() {
   // 今の付箋のすぐ下に、次の付箋を足してそこへ移る（色・タグ・まとめ先・タイトルのチェックは引き継ぐ）
   const addNext = () => {
     setBefore((b) => [...b, snapDraft()]);
+    setCurPc(false);
     setText(""); setTitle("");
     areaRef.current?.focus();
   };
@@ -538,6 +544,7 @@ export default function MobileQuickAdd() {
     // 書きかけの内容は控えておき、終わったら戻す（すでに直している途中なら、その控えを引き継ぐ）
     const draft = editing ? editing.draft : { text, title, useTitle, color, tags, area };
     setPcMsg("");
+    if (editing?.pc) { setBefore([]); setAfter([]); setCurPc(false); }   // パソコンの付箋に足しかけていた分は捨てる（ふだんの並びは draft に控えてある）
     setEditing({
       id: i.id,
       target: i.targetProjectId ? { id: i.targetProjectId, name: i.targetProjectName || "" } : null,
@@ -557,9 +564,12 @@ export default function MobileQuickAdd() {
     const wasPc = !!editing?.pc;
     setEditing(null);
     setPcMsg("");
+    setCurPc(false);
     if (d) {
       setText(d.text); setTitle(d.title); setUseTitle(d.useTitle);
       setColor(d.color); setTags(d.tags); setArea(d.area);
+      // パソコンの付箋を直す前に、ふだんの「つなげて書く」の並びがあれば戻す（足しかけた付箋は捨てる）
+      if (d.before) { setBefore(d.before); setAfter(d.after || []); }
     }
     setTab(wasPc ? "write" : "list");   // パソコンの付箋は「書く」の一覧から開いたので、そこへ戻る
   };
@@ -569,9 +579,11 @@ export default function MobileQuickAdd() {
   const openPcEdit = (r) => {
     const tg = curTarget;
     if (!tg || !peekMine?.boardId || !r.h) return;
-    const draft = editing ? editing.draft : { text, title, useTitle, color, tags, area };
+    // ふだんの書きかけ（つなげて書く並びも）は控えておき、終わったら戻す
+    const draft = editing ? editing.draft : { text, title, useTitle, color, tags, area, before, after };
     setEditing({ pc: { pid: tg.id, boardId: peekMine.boardId, noteId: r.id, num: r.num, h: r.h }, target: tg, draft });
     setPcMsg("");
+    setBefore([]); setAfter([]); setCurPc(true);
     setText(r.text || "");
     setTitle(r.title || "");
     setUseTitle(!!r.useTitle);
@@ -589,20 +601,34 @@ export default function MobileQuickAdd() {
       return next;
     });
   };
+  // 直している付箋（並びの中の印のあるもの）と、そのあとに「＋」で足した付箋
+  const pcParts = () => {
+    const seq = [...before, snapDraft(), ...after];
+    const i = Math.max(0, seq.findIndex((d) => d.pcNote));
+    return { pcd: seq[i], adds: seq.slice(i + 1).filter(draftFilled) };
+  };
+  const pcIdSeq = useRef(0);
   const savePcEdit = async () => {
     const e = editing?.pc;
-    if (!e || pcSaving || (!text.trim() && !title.trim())) return;
-    const next = { title: title.trim(), useTitle, text, color, tags };
+    const { pcd, adds } = pcParts();
+    if (!e || pcSaving || (!(pcd.text || "").trim() && !(pcd.title || "").trim())) return;
+    const next = { title: (pcd.title || "").trim(), useTitle: !!pcd.useTitle, text: pcd.text || "", color: pcd.color, tags: pcd.tags || [] };
+    const newId = () => `n${Date.now().toString(36)}_m${++pcIdSeq.current}`;
+    // 足した付箋は、直した付箋の右へ順に置き、線でつなぐ（パソコン版の「＋→」と同じ置き方。src/sidenote.js）
+    const extend = adds.length === 0 ? null : (board, id) => appendSideNotes(board, id, adds.map((d) => ({
+      text: (d.text || "").trim(), title: d.useTitle ? (d.title || "").trim() : "", useTitle: !!d.useTitle, color: d.color, tags: d.tags || [],
+    })), { newId });
     setPcSaving(true); setPcMsg("");
     try {
       const r = await projectEditNote(cloud, e.pid, e.boardId, e.noteId, (n) => ({ ...n, ...next }), {
         check: (n) => noteContentHash(n) === e.h,   // スマホで読んだときのままか（パソコンで直されていたら書かない）
         device: "スマホ",
+        extend,
       });
       if (r.ok) {
         putPeekBoard(e.pid, e.boardId, r.board);
         closeEdit();
-        say("パソコンのボードに保存しました");
+        say(adds.length > 0 ? `パソコンのボードに保存しました（${adds.length}枚足しました）` : "パソコンのボードに保存しました");
       } else if (r.reason === "changed") {
         // もう一度「保存」したら、この内容で上書きする
         setEditing((x) => (x?.pc ? { ...x, pc: { ...x.pc, h: noteContentHash(r.note) } } : x));
@@ -879,6 +905,10 @@ export default function MobileQuickAdd() {
 
   const c = COLORS[color];
   const canAdd = [...before, snapDraft(), ...after].some(draftFilled);
+  // 「保存」を押せるか。パソコンの付箋を直しているときは、その付箋が空でないか（足した付箋を書いている途中でも押せる）
+  const saveReady = editing?.pc
+    ? (() => { const { pcd } = pcParts(); return !!((pcd.text || "").trim() || (pcd.title || "").trim()); })()
+    : !!(text.trim() || title.trim());
   // つなげて書いている付箋の、小さい表示（押すとその付箋へ移る。✕ で外す）
   const threadCard = (d, key, onOpen, onRemove) => {
     const col = COLORS[d.color] || COLORS[DEFAULT_COLOR];
@@ -895,13 +925,16 @@ export default function MobileQuickAdd() {
           <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: ttl ? 700 : 400, color: head ? "#3E3A33" : "#9C9587", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {head || "（まだ書いていません）"}
           </span>
-          <button
-            data-thread-remove
-            onClick={(e) => { e.stopPropagation(); onRemove(); }}
-            style={{ border: "none", background: "transparent", color: "#6B665C", fontSize: 15, padding: "2px 8px", cursor: "pointer", flexShrink: 0 }}
-          >
-            ✕
-          </button>
+          {/* 直しているパソコンの付箋は外せない（✕ を出さない） */}
+          {!d.pcNote && (
+            <button
+              data-thread-remove
+              onClick={(e) => { e.stopPropagation(); onRemove(); }}
+              style={{ border: "none", background: "transparent", color: "#6B665C", fontSize: 15, padding: "2px 8px", cursor: "pointer", flexShrink: 0 }}
+            >
+              ✕
+            </button>
+          )}
         </div>
       </div>
     );
@@ -995,7 +1028,7 @@ export default function MobileQuickAdd() {
       {tab === "write" && (
         <div data-write-scroll style={{ flex: 1, overflowY: "auto", padding: 14 }}>
           {/* つなげて書いている付箋のうち、今の付箋より前のもの（押すと戻って直せる） */}
-          {!editing && before.map((d, i) => (
+          {(!editing || editing.pc) && before.map((d, i) => (
             <div key={"b" + i}>
               {threadCard(d, "b" + i, () => goBefore(i), () => setBefore((b) => b.filter((_, k) => k !== i)))}
               {threadLine}
@@ -1005,7 +1038,7 @@ export default function MobileQuickAdd() {
             data-write-card
             style={{
               background: c.bg, borderTop: `10px solid ${c.edge}`, borderRadius: 6,
-              boxShadow: "2px 4px 10px rgba(60,50,30,.18)", padding: "10px 12px 12px", marginBottom: editing ? 14 : 0,
+              boxShadow: "2px 4px 10px rgba(60,50,30,.18)", padding: "10px 12px 12px", marginBottom: editing && !editing.pc ? 14 : 0,
             }}
           >
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, marginBottom: 8 }}>
@@ -1037,8 +1070,9 @@ export default function MobileQuickAdd() {
             />
           </div>
 
-          {/* つなげて書く: 書く欄のすぐ下の、幅いっぱいの「＋」。今の付箋の下に、線でつながる次の付箋を足す */}
-          {!editing && (
+          {/* つなげて書く: 書く欄のすぐ下の、幅いっぱいの「＋」。今の付箋の下に、線でつながる次の付箋を足す。
+              パソコンの付箋を直している間も出す（足した付箋は、保存したときにその付箋の右へつながって入る。6.22.0） */}
+          {(!editing || editing.pc) && (
             <div style={{ marginBottom: 14 }}>
               {threadLine}
               <button
@@ -1275,10 +1309,10 @@ export default function MobileQuickAdd() {
             <button
               data-add
               onClick={editing ? saveEdit : add}
-              disabled={editing ? pcSaving || (!text.trim() && !title.trim()) : !canAdd}
+              disabled={editing ? pcSaving || !saveReady : !canAdd}
               style={{
                 flex: 1, border: "none", borderRadius: 12,
-                background: (editing ? !pcSaving && (text.trim() || title.trim()) : canAdd) ? "#3E3A33" : "#C9C2B2",
+                background: (editing ? !pcSaving && saveReady : canAdd) ? "#3E3A33" : "#C9C2B2",
                 color: "#F6F2E9", fontSize: 16, fontWeight: 700, padding: "15px 0", cursor: "pointer",
               }}
             >

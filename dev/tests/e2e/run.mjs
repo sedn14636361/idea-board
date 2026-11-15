@@ -53,6 +53,7 @@ const all = [
   ["edge-toggle", "edge-toggle.mjs", { BASE }],                      // つないである付箋どうしでもう一度つなぐと線を外す
   ["mobile-peek", "mobile-peek.mjs", { BASE }],                      // スマホ版: 今ある付箋（このスマホ・パソコンのボード）を見ながら書く
   ["mobile-pc-edit", "mobile-pc-edit.mjs", { BASE }],                // スマホ版: パソコンのボードの付箋を直す（6.21.0）
+  ["mobile-pc-add", "mobile-pc-add.mjs", { BASE }],                  // スマホ版: パソコンの付箋を直すときに付箋を足す（6.22.0）
   ["mobile-thread", "mobile-thread.mjs", { BASE }],                  // スマホ版: つなげた付箋を続けて書く → パソコンで線でつながる
   ...seeds.map((s) => [`t-random#${s}`, "t-random.mjs", { BASE, SEED: s }]),   // 組み合わせの試験
 ];

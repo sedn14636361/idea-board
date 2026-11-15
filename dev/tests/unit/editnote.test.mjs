@@ -6,6 +6,7 @@ const F = makeFakeFirestore();
 globalThis.fetch = F.fetch;
 const C = await import(new URL("../../src/cloud.js", import.meta.url).href);
 const { noteContentHash } = await import(new URL("../../src/incoming.js", import.meta.url).href);
+const { appendSideNotes } = await import(new URL("../../src/sidenote.js", import.meta.url).href);
 const conf = { projectId: "p", apiKey: "k", room: "r" };
 let ng = 0;
 const eq = (l, got, want) => { const a = JSON.stringify(got), b = JSON.stringify(want);
@@ -56,6 +57,38 @@ eq("目次の更新時刻が変わる（パソコンはこれで気づく）", F
 eq("書いた端末の名前", F.DB.get("P").fields.device.stringValue, "スマホ");
 eq("使われなくなったかけらは残らない", orphans(), []);
 eq("目次の指紋は、読んだ中身の指紋と同じ", meta().boards[0].h, C.hashOf(JSON.stringify(after.boards[0])));
+
+console.log("\n■ 直したうえで付箋を足す（extend。6.22.0）");
+{
+  const cur = await pull();
+  const h = noteContentHash(cur.boards[0].notes.find((n) => n.id === "n1"));
+  const utBefore = F.DB.get("P").updateTime;
+  let writes = 0;
+  F.hooks.beforeWrite = (id) => { if (id === "P") writes++; return true; };
+  let k = 0;
+  const r = await C.projectEditNote(conf, "P", "b1", "n1", (n) => ({ ...n, text: "直した #1" }), {
+    check: (n) => noteContentHash(n) === h,
+    extend: (b, id) => appendSideNotes(b, id, [{ text: "足した1" }, { text: "足した2" }], { newId: () => "add" + ++k }),
+  });
+  F.hooks.beforeWrite = null;
+  const now = await pull();
+  const b = now.boards[0];
+  eq("書けた", r.ok, true);
+  eq("目次は1回だけ書き換わる（直したのと足したのは同じ1回）", writes, 1);
+  eq("直した付箋と足した2枚が入る", [b.notes.find((n) => n.id === "n1").text, ...b.notes.filter((n) => n.id.startsWith("add") && !b.edges.some((e) => e.id === n.id)).map((n) => n.text)], ["直した #1", "足した1", "足した2"]);
+  eq("線は #1→足した1→足した2", b.edges.slice(-2).map((e) => [b.notes.find((n) => n.id === e.from)?.text, b.notes.find((n) => n.id === e.to)?.text]), [["直した #1", "足した1"], ["足した1", "足した2"]]);
+  eq("ほかのボードは変わらない", JSON.stringify(now.boards[1]), JSON.stringify(cur.boards[1]));
+  eq("目次の更新時刻が変わった", F.DB.get("P").updateTime !== utBefore, true);
+}
+{
+  const cur = JSON.stringify(await pull());
+  const ut = F.DB.get("P").updateTime;
+  const r = await C.projectEditNote(conf, "P", "b1", "n1", (n) => ({ ...n, text: "x" }), {
+    check: () => false,                              // パソコンで先に直されていた
+    extend: (b, id) => appendSideNotes(b, id, [{ text: "入らない" }], { newId: () => "no" }),
+  });
+  eq("先に直されていたら、足す付箋も書かない", [r.reason, F.DB.get("P").updateTime === ut, JSON.stringify(await pull()) === cur], ["changed", true, true]);
+}
 
 console.log("\n■ パソコンで先に直されていたら書かない");
 {
