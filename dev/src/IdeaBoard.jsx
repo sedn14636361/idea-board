@@ -1868,7 +1868,9 @@ export default function IdeaBoard() {
         n.y = parentId ? Math.max(0, snap(n.y)) : snap(n.y);
       }
       n.z = ++zRef.current;
-      return { ...b, nextNum: num + 1, notes: [...b.notes, n] };
+      // 通し番号の組に入る付箋（6.25.0）: 組の全員の分母の出し方を、選んだ形にそろえる
+      const all = [...b.notes, n];
+      return { ...b, nextNum: num + 1, notes: n.seq ? seqDenOn(all, n.seq.id, n.seq.den !== false) : all };
     });
     focusNew(() => noteEls.current[newId]);
   };
@@ -1892,16 +1894,45 @@ export default function IdeaBoard() {
   // プロパティ選択モードのときは、貼る前に設定パネルを出す
   const addNote = (x, y, parentId = null) => {
     if (propMode) {
-      setPendingNote({ x, y, parentId, color: DEFAULT_COLOR, title: "", useTitle: false, tags: [] });
+      setPendingNote({ x, y, parentId, color: DEFAULT_COLOR, title: "", useTitle: false, tags: [], numStyle: null });
       return;
     }
     addNoteNow(x, y, parentId);
   };
 
+  // 貼る前の画面の通し番号（6.25.0）: 同じボードの同じタイトルの組（無ければ null）
+  const groupTitled = (title) => {
+    const t = (title || "").trim();
+    return notes.find((m) => m.seq?.id && (m.title || "").trim() === t) || null;
+  };
+  // 選んでいなければ（numStyle が null）、同じタイトルの組があればその形、無ければ「なし」（ユーザーが選択）
+  const pendingNumStyle = (p) => {
+    if (!p.useTitle) return "none";
+    if (p.numStyle) return p.numStyle;
+    const g = groupTitled(p.title);
+    return g ? (g.seq.den !== false ? "den" : "plain") : "none";
+  };
+  // 貼ったあとの見出しの見本（同じ組の付箋と、貼る位置から数える）
+  const pendingSample = (p) => {
+    const t = (p.title || "").trim();
+    const st = pendingNumStyle(p);
+    if (st === "none") return t || "（タイトルなし）";
+    const g = groupTitled(t);
+    const probe = { ...makeNote(p.x, p.y, p.parentId, 0), id: "__probe", title: t, useTitle: true, seq: { id: g ? g.seq.id : "__new", den: st === "den" } };
+    const all = [...notes.map((m) => (g && m.seq?.id === g.seq.id ? { ...m, seq: { ...m.seq, den: st === "den" } } : m)), probe];
+    return [t, seqLabel(seriesOf(all).get("__probe"))].filter(Boolean).join(" ");
+  };
   const commitPendingNote = () => {
     if (!pendingNote) return;
     const { x, y, parentId, color, title, useTitle, tags } = pendingNote;
-    addNoteNow(x, y, parentId, { color, title: useTitle ? title : "", useTitle, tags });
+    const props = { color, title: useTitle ? title : "", useTitle, tags };
+    const st = pendingNumStyle(pendingNote);
+    if (st !== "none") {
+      const g = groupTitled(title);
+      props.title = (title || "").trim();
+      props.seq = { id: g ? g.seq.id : `q${nextId()}`, den: st === "den" };
+    }
+    addNoteNow(x, y, parentId, props);
     setPendingNote(null);
   };
 
@@ -3385,28 +3416,33 @@ export default function IdeaBoard() {
     if (ids.length === 0) return;
     setNotes((ns) => titlesOn(ns, ids, bulkTitle, () => `q${nextId()}`));
   };
+  // 通し番号は「なし」「1/4」「1」の3つから選ぶ（6.24.0。ユーザーが選択）。選んだものを濃くする。
+  // 一括変更のメニューと貼る前の画面（6.25.0）で共通
+  const numStyleChoices = (style, pick) => (
+    <div style={{ display: "flex" }}>
+      {[["none", "なし"], ["den", "1/4"], ["plain", "1"]].map(([key, label]) => (
+        <button
+          key={key}
+          data-numstyle={key}
+          aria-pressed={style === key}
+          onClick={() => pick(key)}
+          style={{
+            flex: 1, border: "1px solid #3E3A33", marginLeft: key === "none" ? 0 : -1,
+            borderRadius: key === "none" ? "6px 0 0 6px" : key === "plain" ? "0 6px 6px 0" : 0,
+            background: style === key ? "#3E3A33" : "#fff", color: style === key ? "#FFFDF6" : "#3E3A33",
+            fontFamily: "inherit", fontSize: 12, fontWeight: 700, padding: "5px 0", cursor: "pointer",
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
   const titleChoices = (ids, close) => {
     const t = bulkTitle.title.trim();
     const n = ids.length;
     const sample = (i) => [t, bulkTitle.number ? (bulkTitle.den ? `${i}/${n}` : `${i}`) : ""].filter(Boolean).join(" ") || "（タイトルなし）";
-    // 通し番号は「なし」「1/4」「1」の3つから選ぶ（6.24.0。ユーザーが選択）。選んだものを濃くする
     const style = !bulkTitle.number ? "none" : bulkTitle.den ? "den" : "plain";
-    const seg = (key, label, patch) => (
-      <button
-        key={key}
-        data-numstyle={key}
-        aria-pressed={style === key}
-        onClick={() => setBulkTitle((b) => ({ ...b, ...patch }))}
-        style={{
-          flex: 1, border: "1px solid #3E3A33", borderRadius: 0, marginLeft: key === "none" ? 0 : -1,
-          background: style === key ? "#3E3A33" : "#fff", color: style === key ? "#FFFDF6" : "#3E3A33",
-          fontFamily: "inherit", fontSize: 12, fontWeight: 700, padding: "5px 0", cursor: "pointer",
-          ...(key === "none" ? { borderRadius: "6px 0 0 6px" } : key === "plain" ? { borderRadius: "0 6px 6px 0" } : {}),
-        }}
-      >
-        {label}
-      </button>
-    );
     return (
       <>
         <div style={{ fontSize: 11.5, fontWeight: 700, color: "#6B665C", marginBottom: 5 }}>選んだ {n} 枚</div>
@@ -3420,11 +3456,7 @@ export default function IdeaBoard() {
           style={{ width: "100%", boxSizing: "border-box", border: "1px solid #C9C2B2", borderRadius: 5, fontSize: 13, fontWeight: 700, padding: "5px 8px", fontFamily: "inherit", color: "#3E3A33", background: "#fff" }}
         />
         <div style={{ fontSize: 12, fontWeight: 700, margin: "10px 0 4px" }}>通し番号</div>
-        <div style={{ display: "flex" }}>
-          {seg("none", "なし", { number: false })}
-          {seg("den", "1/4", { number: true, den: true })}
-          {seg("plain", "1", { number: true, den: false })}
-        </div>
+        {numStyleChoices(style, (k) => setBulkTitle((b) => ({ ...b, number: k !== "none", den: k === "den" ? true : k === "plain" ? false : b.den })))}
         <div data-bulksample style={{ fontSize: 11.5, color: "#6B665C", margin: "6px 0 0" }}>
           {sample(1)}{n > 1 ? `、${sample(2)}` : ""}{n > 2 ? " …" : ""}
         </div>
@@ -7509,6 +7541,14 @@ export default function IdeaBoard() {
                   background: "#fff", color: "#3E3A33",
                 }}
               />
+            )}
+            {pendingNote.useTitle && (
+              // 通し番号（6.25.0）: 同じタイトルの組があればその形がはじめから選ばれている。見本は貼ったあとの見出し
+              <div data-pendnum style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>通し番号</div>
+                {numStyleChoices(pendingNumStyle(pendingNote), (k) => setPendingNote((p) => ({ ...p, numStyle: k })))}
+                <div data-pendsample style={{ fontSize: 11.5, color: "#6B665C", marginTop: 5 }}>{pendingSample(pendingNote)}</div>
+              </div>
             )}
             <div style={{ height: 12 }} />
 
