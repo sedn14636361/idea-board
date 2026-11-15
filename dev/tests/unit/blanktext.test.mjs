@@ -1,5 +1,5 @@
-// 空のまま離れた直書きの文字を、履歴からも無かったことにする（src/history.js の rewriteHist / withoutBlankText。6.11.1）
-import { makeHist, recordChange, undoStep, redoStep, canUndo, sameBoards, rewriteHist, withoutBlankText, isBlankText } from "../../src/history.js";
+// 空のまま離れた直書きの文字を、履歴からも無かったことにする（src/history.js の dropBlankText / withoutBlankText。6.11.1・6.22.0）
+import { makeHist, recordChange, undoStep, redoStep, canUndo, sameBoards, dropBlankText, withoutBlankText, isBlankText } from "../../src/history.js";
 let ng = 0;
 const eq = (l, got, want) => { const a = JSON.stringify(got), b = JSON.stringify(want);
   if (a !== b) { console.error(`NG ${l}\n   得: ${a}\n   期: ${b}`); ng++; } else console.log(`ok ${l}`); };
@@ -14,16 +14,17 @@ const x = (text) => ({ id: "x", x: 500, y: 200, text, size: 1, z: 3 });
 
 eq("空白・改行だけは空", [isBlankText({ text: "" }), isBlankText({ text: " \n\t　" }), isBlankText({}), isBlankText({ text: " a " })], [true, true, true, false]);
 
+// 6.22.0: 打った変化は typed の手（入力欄の外の Ctrl+Z では戻さない）。消すのは dropBlankText(h, id, 消す前, 消した後)
+
 // 1) 作って何も書かずに離れた: 作った手ごと無かったことになり、Ctrl+Z で空の文字が戻らない
 {
   const h = makeHist();
   const made = S([hello, x("")]);
   recordChange(h, s0, 1000, { boundary: true });          // 作った
   const after = S([hello]);                               // 離れたので消した（このとき今の状態は作る前と同じ）
-  rewriteHist(h, withoutBlankText("x"), after);
+  dropBlankText(h, "x", made, after);
   eq("1: 戻すものは残らない（作った手も消える）", canUndo(h, after), false);
   eq("1: Ctrl+Z を押しても何も返らない", undoStep(h, after), null);
-  void made;
 }
 
 // 2) 前に別の操作（付箋を動かした）があれば、その手は残り、Ctrl+Z 1回でそれが戻る
@@ -32,22 +33,23 @@ eq("空白・改行だけは空", [isBlankText({ text: "" }), isBlankText({ text
   const moved = S([hello], { notes: [{ ...note, x: 120 }] });
   recordChange(h, s0, 1000, { boundary: true });          // 付箋を動かした（s0 → moved）
   recordChange(h, moved, 3000, { boundary: true });       // 文字を作った（moved → +x）
+  const made = { boards: [{ ...moved.boards[0], texts: [hello, x("")] }], currentBoardId: "B1" };
   const after = { boards: [{ ...moved.boards[0], texts: [hello] }], currentBoardId: "B1" };
-  rewriteHist(h, withoutBlankText("x"), after);
+  dropBlankText(h, "x", made, after);
   eq("2: 戻すものは1手（付箋を動かした手）", h.undo.length + (h.open ? 1 : 0), 1);
   const back = undoStep(h, after);
   eq("2: Ctrl+Z 1回で付箋を動かす前に戻る（空の文字は出てこない）", [back.boards[0].notes[0].x, back.boards[0].texts.map((t) => t.id)], [0, ["h"]]);
 }
 
-// 3) 書いてから全部消して離れた: 書いてあった状態には Ctrl+Z で戻れる
+// 3) 書いてから全部消して離れた: 書いてあった状態には Ctrl+Z で戻れる（消したことが1手になる）
 {
   const h = makeHist();
-  recordChange(h, s0, 1000, { boundary: true });                 // 作った（s0 → +x""）
-  recordChange(h, S([hello, x("")]), 1200, {});                  // 書いた（500ms 以内なので同じ手）
+  recordChange(h, s0, 1000, { boundary: true });                          // 作った（s0 → +x""）
+  recordChange(h, S([hello, x("")]), 3000, { boundary: true, typed: true }); // 打った（→ x"あいう"）
   const typed = S([hello, x("あいう")]);
-  recordChange(h, typed, 5000, { boundary: true });              // 全部消した（typed → x""）
-  const after = S([hello]);                                      // 離れたので消した
-  rewriteHist(h, withoutBlankText("x"), after);
+  recordChange(h, typed, 5000, { boundary: true, typed: true });         // 全部消した（→ x""）
+  const after = S([hello]);                                              // 離れたので消した
+  dropBlankText(h, "x", S([hello, x("")]), after);
   eq("3: 戻せる", canUndo(h, after), true);
   const back = undoStep(h, after);
   eq("3: Ctrl+Z で「あいう」が戻る", back.boards[0].texts.map((t) => [t.id, t.text]), [["h", "hello"], ["x", "あいう"]]);
@@ -58,9 +60,9 @@ eq("空白・改行だけは空", [isBlankText({ text: "" }), isBlankText({ text
 // 4) 書いてある文字 h を全部消して離れた: Ctrl+Z で hello に戻る
 {
   const h = makeHist();
-  recordChange(h, s0, 1000, { boundary: true });                 // h を全部消した（s0 → h""）
+  recordChange(h, s0, 1000, { boundary: true, typed: true });   // h を全部消した（s0 → h""）
   const after = S([]);
-  rewriteHist(h, withoutBlankText("h"), after);
+  dropBlankText(h, "h", S([{ ...hello, text: "" }]), after);
   const back = undoStep(h, after);
   eq("4: Ctrl+Z で hello に戻る", back.boards[0].texts.map((t) => [t.id, t.text]), [["h", "hello"]]);
   const fwd = redoStep(h, back);

@@ -39,6 +39,8 @@ const all = [
   ["transfer-cloud", "transfer-cloud.mjs", { BASE }],                // 移したあと、クラウドの両方のプロジェクトが新しい中身になる
   ["undo", "undo.mjs", { BASE }],                                    // 元に戻す・やり直す
   ["undo-sync", "undo-sync.mjs", { BASE }],                          // 他の端末の版を読み込んだら履歴を消す
+  ["undo-field", "undo-field.mjs", { BASE }],                        // 入力欄の中の Ctrl+Z は文章だけ、外は移動など（文章は戻さない）
+  ["edge-outside", "edge-outside.mjs", { BASE }],                    // 線の端は付箋の枠の外。重なっていれば描かない
   ["side-note", "side-note.mjs", { BASE }],                          // 付箋の右に同じ色・タグの付箋を作る
   ["autofocus", "autofocus.mjs", { BASE }],                          // 付箋・文字を作ったらそのまま書ける
   ["bulk-ops", "bulk-ops.mjs", { BASE }],                            // 選んだ付箋のタグ一括・格子に整列・領域で囲む

@@ -7,7 +7,8 @@ import {
 import { syncTags, mergeTags, sameTags } from "./tagsync.js";
 import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.js";
 import { renumber, transferNotes } from "./notes.js";
-import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, rewriteHist, withoutBlankText, isBlankText } from "./history.js";
+import { edgeEnds, END_R } from "./edges.js";
+import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, dropBlankText as forgetBlankText, isBlankText } from "./history.js";
 import { snapToGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
 import { incomingPlan, noteContentHash, chainsOf, layoutChains, linksOf } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
@@ -407,7 +408,16 @@ export default function IdeaBoard() {
   const editMarkRef = useRef(null);
   const blankDropRef = useRef(null); // 空のまま離れた文字を消した印（{ pid, id }。履歴の effect が読む）
   const textToolRef = useRef(null);  // 直書きの文字の「A」「⠿」を押した（その文字の id）。そのときは空でも消さない
-  const markEdit = () => { editMarkRef.current = { pid: currentProjectId, at: Date.now() }; };
+  // 入力欄でキーボードから打った変化（6.22.0）。印に typed を付け、入力欄の外の Ctrl+Z では戻さない（ブラウザの取り消しで戻す）。
+  // 同じ描き直しの間に打っていない変化（ボタンなど）があれば、その印は打っていない方にする
+  const typingRef = useRef(false);
+  const markEdit = () => {
+    const prev = editMarkRef.current;
+    const now = Date.now();
+    const opBefore = prev && prev.pid === currentProjectId && !prev.typed && now - prev.at < 1000;
+    editMarkRef.current = { pid: currentProjectId, at: now, typed: typingRef.current && !opBefore };
+  };
+  const typed = (fn) => { typingRef.current = true; try { fn(); } finally { typingRef.current = false; } };
   const setBoards = (fn) => {
     markEdit();
     updateProject((p) => ({ ...p, boards: typeof fn === "function" ? fn(p.boards) : fn }));
@@ -652,11 +662,14 @@ export default function IdeaBoard() {
     for (const [id, el] of Object.entries(noteEls.current)) {
       if (!el || !el.isConnected) continue;
       const r = el.getBoundingClientRect();
+      // 大きさは offsetWidth/offsetHeight（ボードの座標。拡大率や transform の影響を受けない）で測る（6.22.0）。
+      // 見た目の大きさ（getBoundingClientRect）は、貼った直後の出てくる動き（92% から広がる）の途中で測ると小さく、
+      // 次に描き直すまで線の端が付箋の内側に入っていた。中心は、その動きが中心を基準に広がるので見た目から取ってよい
       next[id] = {
         cx: (r.left + r.width / 2 - base.left) / zf,
         cy: (r.top + r.height / 2 - base.top) / zf,
-        hw: r.width / 2 / zf,
-        hh: r.height / 2 / zf,
+        hw: (el.offsetWidth || r.width / zf) / 2,
+        hh: (el.offsetHeight || r.height / zf) / 2,
       };
     }
     // 変わっていなければ setCenters を呼ばない（6.14.1）。関数で渡して prev を返しても、ほかの更新が待っていると
@@ -2437,13 +2450,13 @@ export default function IdeaBoard() {
       if (marked) {
         const h = (histRef.current[pid] ||= makeHist());
         const g = gestureRef.current;
-        recordChange(h, seen, Date.now(), { boundary: g.boundary, pointerDown: g.down });
+        recordChange(h, seen, Date.now(), { boundary: g.boundary, pointerDown: g.down, typed: !!mark.typed });
         g.boundary = false;
       }
       if (dropped) {
-        // 空のまま離れた文字を消した（6.11.1）。履歴の控えからも外して、作った手ごと無かったことにする
-        // （書いてあった控えは残るので、書いてから全部消した文字は Ctrl+Z で戻せる）
-        rewriteHist(histRef.current[pid], withoutBlankText(forget.id), cur);
+        // 空のまま離れた文字を消した（6.11.1）。一度も書いていなければ、作った手ごと無かったことにする。
+        // 書いてあったことがあれば「消した」を1手として積み、Ctrl+Z で書いてあった文章のまま戻せる（6.22.0。src/history.js）
+        forgetBlankText(histRef.current[pid], forget.id, seen, cur);
       } else if (!marked) {
         // 利用者の操作ではない書き換え（他の端末の版の読み込み・復元ポイント）。前の状態へ戻すと上書きになるので履歴を消す
         delete histRef.current[pid];
@@ -3736,7 +3749,7 @@ export default function IdeaBoard() {
             data-nodrag
             value={n.title || ""}
             placeholder="タイトル"
-            onChange={(e) => updateNote(n.id, { title: e.target.value.replace(/\n/g, "") })}
+            onChange={(e) => typed(() => updateNote(n.id, { title: e.target.value.replace(/\n/g, "") }))}
             style={{
               width: "100%", boxSizing: "border-box", flexShrink: 0,
               border: "none", borderBottom: "1px solid rgba(62,58,51,.18)",
@@ -3827,7 +3840,7 @@ export default function IdeaBoard() {
             data-nodrag
             value={n.text}
             placeholder="アイデアを書く"
-            onChange={(e) => updateNote(n.id, { text: e.target.value })}
+            onChange={(e) => typed(() => updateNote(n.id, { text: e.target.value }))}
             style={{
               width: "100%", border: "none", background: "transparent",
               resize: "none",
@@ -4186,16 +4199,6 @@ export default function IdeaBoard() {
   const renderEdges = () => {
     const seen = new Set();
 
-    const edgePoint = (from, to) => {
-      const dx = to.cx - from.cx;
-      const dy = to.cy - from.cy;
-      if (dx === 0 && dy === 0) return { x: from.cx, y: from.cy };
-      const sx = dx !== 0 ? (from.hw + 3) / Math.abs(dx) : Infinity;
-      const sy = dy !== 0 ? (from.hh + 3) / Math.abs(dy) : Infinity;
-      const s = Math.min(sx, sy, 0.45);
-      return { x: from.cx + dx * s, y: from.cy + dy * s };
-    };
-
     return edges.map((ed) => {
       const a = noteMap[ed.from];
       const b = noteMap[ed.to];
@@ -4207,8 +4210,10 @@ export default function IdeaBoard() {
       const ra = centers[aid];
       const rb = centers[bid];
       if (!ra || !rb) return null;
-      const p1 = edgePoint(ra, rb);
-      const p2 = edgePoint(rb, ra);
+      // 端は付箋の枠の外（src/edges.js）。重なっていて外に引く場所が無ければ描かない（6.22.0）
+      const ends = edgeEnds(ra, rb);
+      if (!ends) return null;
+      const { p1, p2 } = ends;
       const bundled = aid !== ed.from || bid !== ed.to;
       const key = `${[aid, bid].sort().join("|")}`;
       const dup = seen.has(key);
@@ -4235,8 +4240,8 @@ export default function IdeaBoard() {
               style={{ pointerEvents: "none" }}
             />
           )}
-          {!dup && <circle cx={p1.x} cy={p1.y} r="4" fill={color} />}
-          {!dup && <circle cx={p2.x} cy={p2.y} r="4" fill={color} />}
+          {!dup && <circle cx={p1.x} cy={p1.y} r={END_R} fill={color} />}
+          {!dup && <circle cx={p2.x} cy={p2.y} r={END_R} fill={color} />}
           {!dup && ed.memo && (() => {
             const mx = (p1.x + p2.x) / 2;
             const my = (p1.y + p2.y) / 2;
@@ -5659,7 +5664,7 @@ export default function IdeaBoard() {
                 <input
                   value={zn.label || ""}
                   placeholder="領域名"
-                  onChange={(e) => updateZone(zn.id, { label: e.target.value })}
+                  onChange={(e) => typed(() => updateZone(zn.id, { label: e.target.value }))}
                   style={{
                     border: "none", background: "transparent", fontFamily: "inherit",
                     fontSize: 12, fontWeight: 700, color: "#3E3A33",
@@ -5864,7 +5869,7 @@ export default function IdeaBoard() {
                   value={ed.memo || ""}
                   placeholder="線にメモを書く"
                   onChange={(e) =>
-                    setEdges((es) => es.map((x) => (x.id === ed.id ? { ...x, memo: e.target.value } : x)))
+                    typed(() => setEdges((es) => es.map((x) => (x.id === ed.id ? { ...x, memo: e.target.value } : x))))
                   }
                   onKeyDown={(e) => { if (e.key === "Enter") setEdgeMenu(null); }}
                   style={{
@@ -5950,7 +5955,7 @@ export default function IdeaBoard() {
                   rows={1}
                   data-w={t.w || ""}
                   placeholder="文字を入力"
-                  onChange={(e) => updateText(t.id, { text: e.target.value })}
+                  onChange={(e) => typed(() => updateText(t.id, { text: e.target.value }))}
                   onBlur={(e) => onTextBlur(e, t.id)}
                   style={{
                     display: "block",
