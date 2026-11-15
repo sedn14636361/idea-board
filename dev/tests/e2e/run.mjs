@@ -41,6 +41,8 @@ const all = [
   ["undo-sync", "undo-sync.mjs", { BASE }],                          // 他の端末の版を読み込んだら履歴を消す
   ["undo-field", "undo-field.mjs", { BASE }],                        // 入力欄の中の Ctrl+Z は文章だけ、外は移動など（文章は戻さない）
   ["edge-outside", "edge-outside.mjs", { BASE }],                    // 線の端は付箋の枠の外。重なっていれば描かない
+  ["bulk-title", "bulk-title.mjs", { BASE }],                        // 選んだ付箋のタイトルをまとめて変える・番号（6.23.0）
+  ["bulk-size", "bulk-size.mjs", { BASE }],                          // 選んだ付箋の大きさをそろえる・縮める・角で追従（6.23.0）
   ["side-note", "side-note.mjs", { BASE }],                          // 付箋の右に同じ色・タグの付箋を作る
   ["autofocus", "autofocus.mjs", { BASE }],                          // 付箋・文字を作ったらそのまま書ける
   ["bulk-ops", "bulk-ops.mjs", { BASE }],                            // 選んだ付箋のタグ一括・格子に整列・領域で囲む

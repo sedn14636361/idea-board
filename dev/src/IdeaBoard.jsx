@@ -9,7 +9,8 @@ import { contentBox, canvasBounds, unionBounds, BASE_W, BASE_H } from "./canvas.
 import { renumber, transferNotes } from "./notes.js";
 import { edgeEnds, END_R } from "./edges.js";
 import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToShow, dropBlankText as forgetBlankText, isBlankText } from "./history.js";
-import { snapToGrid, enclose, tagStates, toggleTagOn } from "./arrange.js";
+import { snapToGrid, enclose, tagStates, toggleTagOn, matchSize, scaleSize, followSize } from "./arrange.js";
+import { seriesOf, seqLabel, titlesOn, seqDenOn, leaveSeq, readingOrder } from "./series.js";
 import { incomingPlan, noteContentHash, chainsOf, layoutChains, linksOf } from "./incoming.js";
 import { APP_VERSION } from "./version.js";
 
@@ -273,6 +274,7 @@ export default function IdeaBoard() {
   const [quoteQuery, setQuoteQuery] = useState("");
   const [copyMenuFor, setCopyMenuFor] = useState(null);
   const [toolMenuFor, setToolMenuFor] = useState(null); // 付箋の「⋯」（しまったボタンのメニュー）
+  const [seqMenuFor, setSeqMenuFor] = useState(null);   // タイトルの番号のチップのメニュー（6.23.0）
   const [selectedIds, setSelectedIds] = useState([]); // 複数選択中の付箋（最上位のみ）
   const [selectedTextIds, setSelectedTextIds] = useState([]); // 複数選択中のボード文字
   const [selBox, setSelBox] = useState(null); // 範囲選択の矩形 {x1,y1,x2,y2}
@@ -362,9 +364,14 @@ export default function IdeaBoard() {
     return hits.sort((a, b) => a.w * a.h - b.w * b.h)[0];
   };
 
-  // 付箋の見出し: タイトルがあればそれ、なければ本文の最初の1行
-  const headingOf = (n) =>
-    (n.title || "").trim() || (n.text || "").split("\n").find((l) => l.trim())?.trim() || "";
+  // 付箋の見出し: タイトルがあればそれ、なければ本文の最初の1行。
+  // タイトルに番号を付けた付箋（6.23.0）は「序 1/4」（番号は seqAll。タイトルの文章には入れていない）
+  const headingOf = (n) => {
+    const t = (n.title || "").trim();
+    const lab = seqLabel(seqAll.get(n.id));
+    if (lab) return t ? `${t} ${lab}` : lab;
+    return t || (n.text || "").split("\n").find((l) => l.trim())?.trim() || "";
+  };
 
   // 俯瞰時に優先表示するタグか（中身が分かる「性質」のタグを優先し、進捗・重要度は後回し）
   const isOverviewTag = (t) => {
@@ -401,6 +408,12 @@ export default function IdeaBoard() {
   const project = projects.find((p) => p.id === currentProjectId) || null;
   const boards = project?.boards || [];
   const currentId = project?.currentBoardId || null;
+  // タイトルの番号（6.23.0。src/series.js）: 付箋の id → { i, n, den }。表示のたびに読む順で数える
+  const seqAll = useMemo(() => {
+    const m = new Map();
+    for (const b of boards) for (const [k, v] of seriesOf(b.notes)) m.set(k, v);
+    return m;
+  }, [boards]);
 
   const updateProject = (fn) =>
     setProjects((ps) => ps.map((p) => (p.id === currentProjectId ? fn(p) : p)));
@@ -1899,6 +1912,8 @@ export default function IdeaBoard() {
       const num = b.nextNum || 1;
       const n = makeNote(0, 0, src.parentId, num);
       Object.assign(n, { id: newId, color: src.color, tags: [...(src.tags || [])], useTitle: !!src.useTitle, w: src.w, h: src.h });
+      // 番号を付けた付箋からは、同じタイトルで同じ組に入る（番号は置いた位置の読む順で決まる。6.23.0）
+      if (src.seq) Object.assign(n, { title: src.title || "", useTitle: true, seq: { ...src.seq } });
       const gap = gridRef.current ? Math.max(GRID, snap(SIDE_GAP)) : SIDE_GAP;
       const sizeOf = (m) => (m.expanded ? { w: m.ew, h: m.eh } : { w: m.w, h: m.h });
       const sibs = b.notes.filter((m) => (m.parentId || null) === (src.parentId || null)).map((m) => ({ x: m.x, y: m.y, ...sizeOf(m) }));
@@ -2588,8 +2603,9 @@ export default function IdeaBoard() {
         const h = n.expanded ? n.eh : n.h;
         return n.x < maxX && n.x + w > minX && n.y < maxY && n.y + h > minY;
       })
-      .map((n) => n.id);
-    setSelectedIds(ids);
+      .map((n) => ({ id: n.id, x: n.x, y: n.y, h: n.expanded ? n.eh : n.h }));
+    // 読む順（左上が先頭）に並べる。大きさをそろえる基準（最初に選んだ付箋）になる（6.23.0）
+    setSelectedIds(readingOrder(ids));
     setSelectMode(false);
     // ボード直書きの文字も選択に含める
     const tIds = texts
@@ -2936,6 +2952,10 @@ export default function IdeaBoard() {
       origW: exp ? note.ew : note.w,
       origH: exp ? note.eh : note.h,
       shiftPick, moved: false,
+      // 2つ以上選んでいて、選んだ付箋の角を引っぱった → ほかの選んだ付箋も同じ割合で変える（6.23.0。ユーザー指定）
+      peers: !note.parentId && selectedIds.includes(note.id) && selectedIds.length >= 2
+        ? notes.filter((n) => n.id !== note.id && !n.parentId && selectedIds.includes(n.id)).map(sizeItem)
+        : [],
     };
     el.setPointerCapture(e.pointerId);
   };
@@ -2966,8 +2986,15 @@ export default function IdeaBoard() {
     const { w, h, dx, dy } = lockSize(e, r, r.expanded ? { w: 240, h: 200 } : { w: 120, h: 90 });
     if (Math.abs(dx) + Math.abs(dy) > 3) r.moved = true;
     if (r.shiftPick && !r.moved) return; // Shift+クリックの手ぶれで大きさを変えない
+    const follow = r.peers.length ? followSize(r.peers, w === r.origW ? 1 : w / r.origW, h === r.origH ? 1 : h / r.origH, gridRef.current ? GRID : 0) : {};
+    const exp = new Map(r.peers.map((p) => [p.id, notes.find((n) => n.id === p.id)?.expanded]));
     setNotes((ns) =>
-      ns.map((n) => (n.id === r.id ? (r.expanded ? { ...n, ew: w, eh: h } : { ...n, w, h }) : n))
+      ns.map((n) => {
+        if (n.id === r.id) return r.expanded ? { ...n, ew: w, eh: h } : { ...n, w, h };
+        const f = follow[n.id];
+        if (!f) return n;
+        return (exp.get(n.id) ?? n.expanded) ? { ...n, ew: f.w, eh: f.h } : { ...n, w: f.w, h: f.h };
+      })
     );
   };
 
@@ -3332,6 +3359,78 @@ export default function IdeaBoard() {
   };
 
   const shownSize = (n) => (n.expanded ? { w: n.ew, h: n.eh } : { w: n.w, h: n.h });
+
+  // ---- 選んだ付箋のタイトルをまとめて変える・番号を付ける（6.23.0。src/series.js） ----
+  const [selTitleOpen, setSelTitleOpen] = useState(false);   // 範囲選択の「タイトル」
+  const [listTitleOpen, setListTitleOpen] = useState(false); // 付箋リストの「タイトル」
+  const [bulkTitle, setBulkTitle] = useState({ title: "", number: true, den: true });
+  // 開くとき: 選んだ付箋のタイトルがそろっていればそれ、番号を付けていれば分母の出し方も合わせる
+  const openBulkTitle = (ids) => {
+    const picked = notes.filter((n) => ids.includes(n.id));
+    const ts = new Set(picked.map((n) => (n.title || "").trim()));
+    const seqd = picked.find((n) => n.seq);
+    setBulkTitle((b) => ({ title: ts.size === 1 ? [...ts][0] : "", number: b.number, den: seqd ? seqd.seq.den !== false : b.den }));
+  };
+  const applyTitles = (ids) => {
+    if (ids.length === 0) return;
+    setNotes((ns) => titlesOn(ns, ids, bulkTitle, () => `q${nextId()}`));
+  };
+  const titleChoices = (ids, close) => {
+    const t = bulkTitle.title.trim();
+    const n = ids.length;
+    const sample = (i) => [t, bulkTitle.number ? (bulkTitle.den ? `${i}/${n}` : `${i}`) : ""].filter(Boolean).join(" ") || "（タイトルなし）";
+    const row = { display: "flex", alignItems: "center", gap: 6, fontSize: 12, margin: "6px 0 0", cursor: "pointer" };
+    return (
+      <>
+        <input
+          data-bulktitle
+          autoFocus
+          value={bulkTitle.title}
+          placeholder="タイトル"
+          onChange={(e) => setBulkTitle((b) => ({ ...b, title: e.target.value.replace(/\n/g, "") }))}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); applyTitles(ids); close(); } }}
+          style={{ width: "100%", boxSizing: "border-box", border: "1px solid #C9C2B2", borderRadius: 5, fontSize: 13, fontWeight: 700, padding: "5px 8px", fontFamily: "inherit", color: "#3E3A33", background: "#fff" }}
+        />
+        <label style={row}>
+          <input type="checkbox" data-bulknumber checked={bulkTitle.number} onChange={(e) => setBulkTitle((b) => ({ ...b, number: e.target.checked }))} />
+          番号を付ける
+        </label>
+        <label style={{ ...row, opacity: bulkTitle.number ? 1 : 0.45, cursor: bulkTitle.number ? "pointer" : "default" }}>
+          <input type="checkbox" data-bulkden disabled={!bulkTitle.number} checked={bulkTitle.den} onChange={(e) => setBulkTitle((b) => ({ ...b, den: e.target.checked }))} />
+          分母を出す
+        </label>
+        <div data-bulksample style={{ fontSize: 11.5, color: "#6B665C", margin: "6px 0 0" }}>
+          {sample(1)}{n > 1 ? `、${sample(2)}` : ""}{n > 2 ? " …" : ""}
+        </div>
+        <button
+          data-bulkapply
+          onClick={() => { applyTitles(ids); close(); }}
+          style={{ width: "100%", marginTop: 8, border: "none", borderRadius: 6, background: "#3E3A33", color: "#FFFDF6", fontSize: 12, fontWeight: 700, padding: "6px 0", cursor: "pointer", fontFamily: "inherit" }}
+        >
+          入れる
+        </button>
+      </>
+    );
+  };
+
+  // ---- 選んだ付箋の大きさ（6.23.0。src/arrange.js） ----
+  // 基準は最初に選んだ付箋（ユーザーが選択。範囲選択では読む順の先頭＝左上、Shift+クリックで足した付箋はそのあと）
+  const [selSizeOpen, setSelSizeOpen] = useState(false);
+  const minSizeOf = (n) => (n.expanded ? { w: 240, h: 200 } : { w: 120, h: 90 });
+  const sizeItem = (n) => ({ id: n.id, ...shownSize(n), min: minSizeOf(n) });
+  const applySizes = (out) =>
+    setNotes((ns) => ns.map((n) => (out[n.id] ? (n.expanded ? { ...n, ew: out[n.id].w, eh: out[n.id].h } : { ...n, w: out[n.id].w, h: out[n.id].h }) : n)));
+  const selNotes = () => selectedIds.map((id) => notes.find((n) => n.id === id && !n.parentId)).filter(Boolean);
+  const matchSelected = (mode) => {
+    const ns = selNotes();
+    if (ns.length < 2) return;
+    applySizes(matchSize(ns.map(sizeItem), sizeItem(ns[0]), mode));
+  };
+  const scaleSelected = (f) => {
+    const ns = selNotes();
+    if (ns.length < 1) return;
+    applySizes(scaleSize(ns.map(sizeItem), f, gridMode ? GRID : 0));
+  };
   // 選んだ付箋の左上を、一番近い目盛り（設定のグリッド間隔。既定 26px）へ動かす（6.14.0）。
   // 付箋の大きさは使わず、重なってもよい（ユーザー指定）。グリッド配置でなくても目盛りは同じ間隔。文字は動かさない
   const tidySelected = () => {
@@ -3359,7 +3458,7 @@ export default function IdeaBoard() {
   // 選択が無くなったら、範囲選択の「移動」の行き先も閉じる
   useEffect(() => {
     if (selectedIds.length + selectedTextIds.length === 0) setSelMoveOpen(false);
-    if (selectedIds.length === 0) { setSelColorOpen(false); setSelTagOpen(false); }
+    if (selectedIds.length === 0) { setSelColorOpen(false); setSelTagOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); }
   }, [selectedIds, selectedTextIds]);
   useEffect(() => {
     if (listPicked.length === 0) { setListColorOpen(false); setListTagOpen(false); }
@@ -3378,7 +3477,8 @@ export default function IdeaBoard() {
   const noteToText = (n, depth = 0, opts = exportOpts) => {
     const pad = "  ".repeat(depth);
     const lines = [];
-    const title = (n.title || "").trim();
+    const lab = seqLabel(seqAll.get(n.id));
+    const title = [(n.title || "").trim(), lab].filter(Boolean).join(" ");
     const num = opts.num ? `#${n.num} ` : "";
     if (n.useTitle && title) {
       lines.push(`${pad}${num}【${title}】`);
@@ -3744,21 +3844,61 @@ export default function IdeaBoard() {
         </NoteBar>
 
         {/* タイトル（1行）。使う設定のときだけ表示。空なら本文の1行目が見出しに使われる */}
-        {!asHeading && n.useTitle && (
-          <input
-            data-nodrag
-            value={n.title || ""}
-            placeholder="タイトル"
-            onChange={(e) => typed(() => updateNote(n.id, { title: e.target.value.replace(/\n/g, "") }))}
-            style={{
-              width: "100%", boxSizing: "border-box", flexShrink: 0,
-              border: "none", borderBottom: "1px solid rgba(62,58,51,.18)",
-              background: "transparent", fontFamily: "inherit",
-              fontSize: 13, fontWeight: 700, color: "#3E3A33",
-              padding: "3px 10px 4px", margin: "2px 0 0",
-            }}
-          />
-        )}
+        {!asHeading && n.useTitle && (() => {
+          // 番号を付けた付箋は、タイトル欄の右端に「1/4」（分母なしなら「1」）。押すと分母の出し方・番号を外す（6.23.0）
+          const info = seqAll.get(n.id);
+          return (
+            <div style={{ position: "relative", display: "flex", alignItems: "center", flexShrink: 0, margin: "2px 0 0", borderBottom: "1px solid rgba(62,58,51,.18)" }}>
+              <input
+                data-nodrag
+                value={n.title || ""}
+                placeholder="タイトル"
+                onChange={(e) => typed(() => updateNote(n.id, { title: e.target.value.replace(/\n/g, "") }))}
+                style={{
+                  flex: 1, minWidth: 0, boxSizing: "border-box",
+                  border: "none",
+                  background: "transparent", fontFamily: "inherit",
+                  fontSize: 13, fontWeight: 700, color: "#3E3A33",
+                  padding: "3px 10px 4px",
+                }}
+              />
+              {info && (
+                <button
+                  data-nodrag
+                  data-seqchip
+                  title="タイトルの番号"
+                  onClick={() => { bringToFront(n.id); setSeqMenuFor((v) => (v === n.id ? null : n.id)); }}
+                  style={{ flexShrink: 0, marginRight: 6, border: "none", borderRadius: 5, background: "rgba(62,58,51,.12)", color: "#3E3A33", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, padding: "1px 7px", cursor: "pointer", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}
+                >
+                  {seqLabel(info)}
+                </button>
+              )}
+              {info && seqMenuFor === n.id && (
+                <div
+                  data-nodrag
+                  data-notepop
+                  data-seqmenu
+                  style={{ position: "absolute", right: 4, top: "calc(100% + 4px)", zIndex: 30, background: "#FFFDF6", border: "1px solid #D9D2C2", borderRadius: 8, boxShadow: "0 5px 16px rgba(40,35,20,.3)", padding: 4, display: "flex", flexDirection: "column", minWidth: 150 }}
+                >
+                  <button
+                    data-seqitem="den"
+                    onClick={() => { setNotes((ns) => seqDenOn(ns, n.seq.id, !info.den)); setSeqMenuFor(null); }}
+                    style={{ textAlign: "left", border: "none", borderRadius: 5, background: "transparent", color: "#3E3A33", fontFamily: "inherit", fontSize: 12, padding: "6px 8px", cursor: "pointer" }}
+                  >
+                    {info.den ? "分母を隠す（1）" : "分母を出す（1/4）"}
+                  </button>
+                  <button
+                    data-seqitem="leave"
+                    onClick={() => { setNotes((ns) => leaveSeq(ns, n.id)); setSeqMenuFor(null); }}
+                    style={{ textAlign: "left", border: "none", borderRadius: 5, background: "transparent", color: "#3E3A33", fontFamily: "inherit", fontSize: 12, padding: "6px 8px", cursor: "pointer" }}
+                  >
+                    この付箋の番号を外す
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {asHeading ? (
           // 縮小表示中: 画面上の見かけの大きさを保った見出し＋タグを出す
@@ -4275,6 +4415,7 @@ export default function IdeaBoard() {
         if (!e.target.closest("[data-quotemenu]")) setQuoteMenuFor(null);
         if (!e.target.closest("[data-copymenu]")) setCopyMenuFor(null);
         if (!e.target.closest("[data-toolmenu]")) setToolMenuFor(null);
+        if (!e.target.closest("[data-seqchip]") && !e.target.closest("[data-seqmenu]")) setSeqMenuFor(null);
         if (!e.target.closest("[data-zonemenu]")) setZoneColorMenuFor(null);
         if (!e.target.closest("[data-sharemenu]")) setShareOpen(false);
         if (!e.target.closest("[data-addmenu]")) setAddMenuOpen(false);
@@ -5418,13 +5559,20 @@ export default function IdeaBoard() {
                       移動
                     </button>
                     <button
-                      onClick={() => { setListColorOpen((v) => !v); setListTagOpen(false); }}
+                      data-listtitlebtn
+                      onClick={() => { const o = !listTitleOpen; setListColorOpen(false); setListTagOpen(false); setListTitleOpen(o); if (o) openBulkTitle(listPicked); }}
+                      style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: listTitleOpen ? "#EDE7DA" : "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
+                    >
+                      タイトル
+                    </button>
+                    <button
+                      onClick={() => { setListColorOpen((v) => !v); setListTagOpen(false); setListTitleOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: listColorOpen ? "#EDE7DA" : "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       色
                     </button>
                     <button
-                      onClick={() => { setListTagOpen((v) => !v); setListColorOpen(false); }}
+                      onClick={() => { setListTagOpen((v) => !v); setListColorOpen(false); setListTitleOpen(false); }}
                       style={{ flex: 1, border: "1px solid #C9C2B2", borderRadius: 5, background: listTagOpen ? "#EDE7DA" : "#fff", color: "#3E3A33", fontSize: 11, padding: "5px 0", cursor: "pointer" }}
                     >
                       タグ
@@ -5454,6 +5602,11 @@ export default function IdeaBoard() {
                       {colorChoices(sameColor(listPicked), (i) => { setColorOf(listPicked, i); setListColorOpen(false); })}
                     </div>
                   ); })()}
+                  {listTitleOpen && (
+                    <div data-listtitle style={{ marginTop: 6, background: "#FFFDF6", border: "1px solid #D9D2C2", borderRadius: 6, padding: 8 }}>
+                      {titleChoices(listPicked, () => setListTitleOpen(false))}
+                    </div>
+                  )}
                   {listTagOpen && (
                     <div data-listtag style={{ marginTop: 6, background: "#FFFDF6", border: "1px solid #D9D2C2", borderRadius: 6, padding: 6 }}>
                       {tagChoices(listPicked)}
@@ -6128,7 +6281,7 @@ export default function IdeaBoard() {
             ⧉ 複製
           </button>
           <button
-            onClick={() => { setSelMoveOpen((v) => !v); setSelColorOpen(false); setSelTagOpen(false); }}
+            onClick={() => { setSelMoveOpen((v) => !v); setSelColorOpen(false); setSelTagOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); }}
             style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
           >
             ↗ 移動
@@ -6136,7 +6289,7 @@ export default function IdeaBoard() {
           {selectedIds.length > 0 && (
             <span style={{ position: "relative", display: "inline-flex" }}>
               <button
-                onClick={() => { setSelColorOpen((v) => !v); setSelMoveOpen(false); setSelTagOpen(false); }}
+                onClick={() => { setSelColorOpen((v) => !v); setSelMoveOpen(false); setSelTagOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); }}
                 style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
               >
                 ● 色
@@ -6162,7 +6315,7 @@ export default function IdeaBoard() {
           {selectedIds.length > 0 && (
             <span style={{ position: "relative", display: "inline-flex" }}>
               <button
-                onClick={() => { setSelTagOpen((v) => !v); setSelColorOpen(false); setSelMoveOpen(false); }}
+                onClick={() => { setSelTagOpen((v) => !v); setSelColorOpen(false); setSelMoveOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); }}
                 style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
               >
                 🏷 タグ
@@ -6180,6 +6333,71 @@ export default function IdeaBoard() {
                   {tagChoices(selectedIds)}
                 </div>
               )}
+            </span>
+          )}
+          {selectedIds.length > 0 && (
+            <span style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                data-seltitlebtn
+                onClick={() => { const o = !selTitleOpen; setSelColorOpen(false); setSelTagOpen(false); setSelMoveOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); if (o) { openBulkTitle(selectedIds); setSelTitleOpen(true); } }}
+                style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+              >
+                T タイトル
+              </button>
+              {selTitleOpen && (
+                <div
+                  data-nodrag
+                  data-seltitle
+                  style={{
+                    position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "calc(100% + 16px)",
+                    background: "#FFFDF6", color: "#3E3A33", border: "1px solid #D9D2C2", borderRadius: 8,
+                    boxShadow: "0 5px 16px rgba(40,35,20,.3)", width: 240, padding: 9,
+                  }}
+                >
+                  {titleChoices(selectedIds, () => setSelTitleOpen(false))}
+                </div>
+              )}
+            </span>
+          )}
+          {selectedIds.length > 0 && (
+            <span style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                data-selsizebtn
+                onClick={() => { const o = !selSizeOpen; setSelColorOpen(false); setSelTagOpen(false); setSelMoveOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); setSelSizeOpen(o); }}
+                style={{ border: "none", borderRadius: 6, background: "#F6F2E9", color: "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 10px", cursor: "pointer" }}
+              >
+                ⇲ 大きさ
+              </button>
+              {selSizeOpen && (() => {
+                const base = selNotes()[0];
+                const b = { border: "1px solid #C9C2B2", borderRadius: 5, background: "#fff", color: "#3E3A33", fontFamily: "inherit", fontSize: 12, padding: "5px 0", cursor: "pointer", flex: 1 };
+                return (
+                  <div
+                    data-nodrag
+                    data-selsize
+                    style={{
+                      position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "calc(100% + 16px)",
+                    background: "#FFFDF6", color: "#3E3A33", border: "1px solid #D9D2C2", borderRadius: 8,
+                    boxShadow: "0 5px 16px rgba(40,35,20,.3)", width: 220, padding: 9,
+                    }}
+                  >
+                    {selNotes().length >= 2 && base && (
+                      <>
+                        <div style={{ fontSize: 11.5, color: "#6B665C", marginBottom: 4 }}>#{base.num} にそろえる</div>
+                        <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+                          <button data-size="w" onClick={() => matchSelected("w")} style={b}>幅</button>
+                          <button data-size="h" onClick={() => matchSelected("h")} style={b}>高さ</button>
+                          <button data-size="both" onClick={() => matchSelected("both")} style={b}>両方</button>
+                        </div>
+                      </>
+                    )}
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button data-size="shrink" onClick={() => scaleSelected(0.8)} style={b}>縮める</button>
+                      <button data-size="grow" onClick={() => scaleSelected(1.25)} style={b}>広げる</button>
+                    </div>
+                  </div>
+                );
+              })()}
             </span>
           )}
           {selectedIds.length > 0 && (
@@ -6213,7 +6431,7 @@ export default function IdeaBoard() {
             ✕ 剥がす
           </button>
           <button
-            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); setSelColorOpen(false); setSelTagOpen(false); }}
+            onClick={() => { setSelectedIds([]); setSelectedTextIds([]); setSelMoveOpen(false); setSelColorOpen(false); setSelTagOpen(false); setSelTitleOpen(false); setSelSizeOpen(false); }}
             style={{ border: "1px solid #8A857B", borderRadius: 6, background: "transparent", color: "#D8D3C8", fontSize: 12, padding: "3px 10px", cursor: "pointer" }}
           >
             解除
