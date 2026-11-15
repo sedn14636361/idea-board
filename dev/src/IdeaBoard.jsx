@@ -179,6 +179,7 @@ const BAR_ICONS = {
   copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 5.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h.5" /></>,
   link: <g transform="rotate(-45 12 12)"><rect x="2.5" y="8.5" width="11" height="7" rx="3.5" /><rect x="10.5" y="8.5" width="11" height="7" rx="3.5" /></g>,
   remove: <path d="M6 6l12 12M18 6L6 18" />,
+  num: <path d="M10 4L8 20M16 4l-2 16M5 9h15M4 15h15" />, // 通し番号（6.24.0）
   more: <g fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></g>,
 };
 function BarIcon({ name, size = 14 }) {
@@ -275,6 +276,7 @@ export default function IdeaBoard() {
   const [copyMenuFor, setCopyMenuFor] = useState(null);
   const [toolMenuFor, setToolMenuFor] = useState(null); // 付箋の「⋯」（しまったボタンのメニュー）
   const [seqMenuFor, setSeqMenuFor] = useState(null);   // タイトルの番号のチップのメニュー（6.23.0）
+  const [numMenuFor, setNumMenuFor] = useState(null);   // 選んだ付箋の「#」から開くタイトルと通し番号（6.24.0。付箋の id）
   const [selectedIds, setSelectedIds] = useState([]); // 複数選択中の付箋（最上位のみ）
   const [selectedTextIds, setSelectedTextIds] = useState([]); // 複数選択中のボード文字
   const [selBox, setSelBox] = useState(null); // 範囲選択の矩形 {x1,y1,x2,y2}
@@ -3371,6 +3373,14 @@ export default function IdeaBoard() {
     const seqd = picked.find((n) => n.seq);
     setBulkTitle((b) => ({ title: ts.size === 1 ? [...ts][0] : "", number: b.number, den: seqd ? seqd.seq.den !== false : b.den }));
   };
+  // 選んだ付箋の「#」（6.24.0）: その付箋の操作列のすぐ下に、選んだ全員のタイトルと通し番号のメニューを出す
+  const openNumMenu = (id) => {
+    if (numMenuFor === id) { setNumMenuFor(null); return; }
+    bringToFront(id);
+    openBulkTitle(selectedIds);
+    setSelTitleOpen(false); setSelSizeOpen(false); setColorMenuFor(null); setTagMenuFor(null); setCopyMenuFor(null);
+    setNumMenuFor(id);
+  };
   const applyTitles = (ids) => {
     if (ids.length === 0) return;
     setNotes((ns) => titlesOn(ns, ids, bulkTitle, () => `q${nextId()}`));
@@ -3379,9 +3389,27 @@ export default function IdeaBoard() {
     const t = bulkTitle.title.trim();
     const n = ids.length;
     const sample = (i) => [t, bulkTitle.number ? (bulkTitle.den ? `${i}/${n}` : `${i}`) : ""].filter(Boolean).join(" ") || "（タイトルなし）";
-    const row = { display: "flex", alignItems: "center", gap: 6, fontSize: 12, margin: "6px 0 0", cursor: "pointer" };
+    // 通し番号は「なし」「1/4」「1」の3つから選ぶ（6.24.0。ユーザーが選択）。選んだものを濃くする
+    const style = !bulkTitle.number ? "none" : bulkTitle.den ? "den" : "plain";
+    const seg = (key, label, patch) => (
+      <button
+        key={key}
+        data-numstyle={key}
+        aria-pressed={style === key}
+        onClick={() => setBulkTitle((b) => ({ ...b, ...patch }))}
+        style={{
+          flex: 1, border: "1px solid #3E3A33", borderRadius: 0, marginLeft: key === "none" ? 0 : -1,
+          background: style === key ? "#3E3A33" : "#fff", color: style === key ? "#FFFDF6" : "#3E3A33",
+          fontFamily: "inherit", fontSize: 12, fontWeight: 700, padding: "5px 0", cursor: "pointer",
+          ...(key === "none" ? { borderRadius: "6px 0 0 6px" } : key === "plain" ? { borderRadius: "0 6px 6px 0" } : {}),
+        }}
+      >
+        {label}
+      </button>
+    );
     return (
       <>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: "#6B665C", marginBottom: 5 }}>選んだ {n} 枚</div>
         <input
           data-bulktitle
           autoFocus
@@ -3391,14 +3419,12 @@ export default function IdeaBoard() {
           onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); applyTitles(ids); close(); } }}
           style={{ width: "100%", boxSizing: "border-box", border: "1px solid #C9C2B2", borderRadius: 5, fontSize: 13, fontWeight: 700, padding: "5px 8px", fontFamily: "inherit", color: "#3E3A33", background: "#fff" }}
         />
-        <label style={row}>
-          <input type="checkbox" data-bulknumber checked={bulkTitle.number} onChange={(e) => setBulkTitle((b) => ({ ...b, number: e.target.checked }))} />
-          番号を付ける
-        </label>
-        <label style={{ ...row, opacity: bulkTitle.number ? 1 : 0.45, cursor: bulkTitle.number ? "pointer" : "default" }}>
-          <input type="checkbox" data-bulkden disabled={!bulkTitle.number} checked={bulkTitle.den} onChange={(e) => setBulkTitle((b) => ({ ...b, den: e.target.checked }))} />
-          分母を出す
-        </label>
+        <div style={{ fontSize: 12, fontWeight: 700, margin: "10px 0 4px" }}>通し番号</div>
+        <div style={{ display: "flex" }}>
+          {seg("none", "なし", { number: false })}
+          {seg("den", "1/4", { number: true, den: true })}
+          {seg("plain", "1", { number: true, den: false })}
+        </div>
         <div data-bulksample style={{ fontSize: 11.5, color: "#6B665C", margin: "6px 0 0" }}>
           {sample(1)}{n > 1 ? `、${sample(2)}` : ""}{n > 2 ? " …" : ""}
         </div>
@@ -3599,6 +3625,8 @@ export default function IdeaBoard() {
     const descendants = collectDescendants(n.id, byParent).length;
     const selected = connectFrom === n.id;
     const canNest = depth < MAX_DEPTH;
+    // 2枚以上選んでいて、この最上位の付箋も選ばれている → 操作列に「#」（タイトルと通し番号。6.24.0）
+    const inMulti = depth === 0 && !n.parentId && selectedIds.length >= 2 && selectedIds.includes(n.id);
     const isExpanded = canNest && n.expanded;
     const curW = isExpanded ? n.ew : n.w;
     const curH = isExpanded ? n.eh : n.h;
@@ -3721,6 +3749,17 @@ export default function IdeaBoard() {
             >
               <BarIcon name="title" />
             </button>
+            {inMulti && (
+              <button
+                data-nodrag
+                data-numbtn
+                title="タイトルと通し番号（選んだ付箋）"
+                onClick={() => openNumMenu(n.id)}
+                style={{ ...BAR_BTN, ...(numMenuFor === n.id ? BAR_ON : {}) }}
+              >
+                <BarIcon name="num" />
+              </button>
+            )}
             {canNest && (
               <button
                 data-nodrag
@@ -3779,6 +3818,7 @@ export default function IdeaBoard() {
           onPick={(run) => { setToolMenuFor(null); run(); }}
           menu={[
             { key: "title", icon: "title", label: n.useTitle ? "タイトル欄をやめる" : "タイトル欄を使う", run: () => updateNote(n.id, { useTitle: !n.useTitle }) },
+            inMulti && { key: "num", icon: "num", label: "タイトルと通し番号", run: () => openNumMenu(n.id) },
             canNest && { key: "nest", icon: isExpanded ? "close" : "open", label: isExpanded ? "中のボードをしまう" : `中のボードを開く${descendants > 0 ? `（${descendants}枚）` : ""}`, run: () => updateNote(n.id, { expanded: !n.expanded }) },
             { key: "side", icon: "side", label: "右に付箋を作る", run: () => addSideNote(n) },
             { key: "copy", icon: "copy", label: "複製・コピー", run: () => { bringToFront(n.id); setCopyMenuFor(n.id); } },
@@ -3786,6 +3826,20 @@ export default function IdeaBoard() {
             { key: "remove", icon: "remove", label: "剥がす", run: () => removeNote(n.id) },
           ].filter(Boolean)}
         >
+          {inMulti && numMenuFor === n.id && (
+            <div
+              data-nodrag
+              data-notepop
+              data-numpop
+              style={{
+                position: "absolute", top: 26, left: 4, zIndex: 100001, width: 240,
+                background: "#FFFDF6", color: "#3E3A33", border: "1px solid #D9D2C2", borderRadius: 8,
+                boxShadow: "0 5px 16px rgba(40,35,20,.3)", padding: 9, boxSizing: "border-box",
+              }}
+            >
+              {titleChoices(selectedIds, () => setNumMenuFor(null))}
+            </div>
+          )}
           {colorMenuFor === n.id && (() => { const withMemo = settings.showColorNotes !== false; return (
             <div
               data-nodrag
@@ -4416,6 +4470,7 @@ export default function IdeaBoard() {
         if (!e.target.closest("[data-copymenu]")) setCopyMenuFor(null);
         if (!e.target.closest("[data-toolmenu]")) setToolMenuFor(null);
         if (!e.target.closest("[data-seqchip]") && !e.target.closest("[data-seqmenu]")) setSeqMenuFor(null);
+        if (!e.target.closest("[data-numbtn]") && !e.target.closest("[data-numpop]") && !e.target.closest("[data-toolmenu]")) setNumMenuFor(null);
         if (!e.target.closest("[data-zonemenu]")) setZoneColorMenuFor(null);
         if (!e.target.closest("[data-sharemenu]")) setShareOpen(false);
         if (!e.target.closest("[data-addmenu]")) setAddMenuOpen(false);

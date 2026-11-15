@@ -12,10 +12,10 @@ const pg = await (await browser.newContext({ viewport: { width: 1400, height: 90
 pg.on("pageerror", (e) => { console.log("  pageerror:", e.message); ng++; });
 
 // 試験データ（260×182。描くと高さ 198 なので、行の判定は先頭の高さの半分 99）:
-//   上の行 C(100,60) B(400,40) A(700,80)、下の行 E(120,340) D(420,320)。選ばない X(100,700)
+//   上の行 C(100,60) B(400,40) A(700,80)、下の行 E(120,340) D(420,320)。選ばない X(100,700)、操作列が「⋯」にしまわれる狭い N(1100,700)
 const note = (id, num, text, x, y, extra = {}) => ({ id, num, text, x, y, w: 260, h: 182, ew: 430, eh: 400, title: "", useTitle: false, tags: [], refs: [], parentId: null, expanded: false, color: 5, z: num, ...extra });
 const A = { id: "PA", name: "A", currentBoardId: "a1", boards: [{ id: "a1", title: "ボード1", nextNum: 7,
-  notes: [note("A", 1, "あ", 700, 80), note("B", 2, "い", 400, 40), note("C", 3, "う", 100, 60), note("D", 4, "え", 420, 320), note("E", 5, "お", 120, 340), note("X", 6, "選ばない", 100, 700)],
+  notes: [note("A", 1, "あ", 700, 80), note("B", 2, "い", 400, 40), note("C", 3, "う", 100, 60), note("D", 4, "え", 420, 320), note("E", 5, "お", 120, 340), note("X", 6, "選ばない", 100, 700), note("N", 7, "狭い", 1100, 700, { w: 150 })],
   edges: [], texts: [], zones: [], strokes: [], images: [] }] };
 await pg.goto(BASE);
 await pg.evaluate((A) => {
@@ -58,30 +58,30 @@ await pg.locator("[data-bulktitle]").fill("序");
 eq("見本が出る", await pg.locator("[data-bulksample]").textContent(), "序 1/5、序 2/5 …");
 await pg.locator("[data-bulkapply]").click();
 let b = await saved();
-eq("5枚のタイトルが「序」・タイトル欄を出す", b.notes.filter((n) => n.id !== "X").map((n) => [n.title, n.useTitle]), Array(5).fill(["序", true]));
+eq("5枚のタイトルが「序」・タイトル欄を出す", b.notes.filter((n) => n.id !== "X" && n.id !== "N").map((n) => [n.title, n.useTitle]), Array(5).fill(["序", true]));
 eq("選ばない付箋は変わらない", [b.notes.find((n) => n.id === "X").title, !!b.notes.find((n) => n.id === "X").seq], ["", false]);
-eq("タイトル欄の右端に読む順の番号（C B A / E D）", await chips(), { A: "3/5", B: "2/5", C: "1/5", D: "5/5", E: "4/5", X: "" });
+eq("タイトル欄の右端に読む順の番号（C B A / E D）", await chips(), { A: "3/5", B: "2/5", C: "1/5", D: "5/5", E: "4/5", X: "", N: "" });
 eq("タイトルの文章には番号を入れない", b.notes.find((n) => n.id === "A").title, "序");
 
 // 2) Ctrl+Z 1回で一括変更の前に戻る・やり直せる
 await clickEmpty();
 await pg.keyboard.press("Control+z");
 b = await saved();
-eq("Ctrl+Z で戻る（タイトル・番号）", [b.notes.every((n) => !n.title && !n.seq), await chips()], [true, { A: "", B: "", C: "", D: "", E: "", X: "" }]);
+eq("Ctrl+Z で戻る（タイトル・番号）", [b.notes.every((n) => !n.title && !n.seq), await chips()], [true, { A: "", B: "", C: "", D: "", E: "", X: "", N: "" }]);
 await pg.keyboard.press("Control+Shift+z");
 await saved();
-eq("やり直すと番号も戻る", await chips(), { A: "3/5", B: "2/5", C: "1/5", D: "5/5", E: "4/5", X: "" });
+eq("やり直すと番号も戻る", await chips(), { A: "3/5", B: "2/5", C: "1/5", D: "5/5", E: "4/5", X: "", N: "" });
 
 // 3) 動かしたら振り直す: A を下の行の右へ
 await drag("A", 0, 300);
-eq("A を下の行の右へ → A は 5/5、D は 4/5", await chips(), { A: "5/5", B: "2/5", C: "1/5", D: "4/5", E: "3/5", X: "" });
+eq("A を下の行の右へ → A は 5/5、D は 4/5", await chips(), { A: "5/5", B: "2/5", C: "1/5", D: "4/5", E: "3/5", X: "", N: "" });
 
 // 4) 「＋→」で作った付箋は同じ組に入る（B の右 → 上の行の3番目）
 await pg.locator('[data-note="B"] [data-sidenote]').first().click();
 await pg.waitForTimeout(300);
 await clickEmpty();
 b = await saved();
-const F = b.notes.find((n) => !["A", "B", "C", "D", "E", "X"].includes(n.id));
+const F = b.notes.find((n) => !["A", "B", "C", "D", "E", "X", "N"].includes(n.id));
 eq("新しい付箋もタイトル「序」", [F.title, F.useTitle], ["序", true]);
 let c = await chips();
 eq("新しい付箋は 3/6、全体が /6", [c[F.id], c.C, c.B, c.E, c.D, c.A], ["3/6", "1/6", "2/6", "4/6", "5/6", "6/6"]);
@@ -114,7 +114,7 @@ const row = pg.locator("div", { has: pg.locator('input[type="checkbox"]') }).fil
 await row.locator('input[type="checkbox"]').first().check();
 await pg.locator("[data-listtitlebtn]").click();
 await pg.locator("[data-listtitle] [data-bulktitle]").fill("序");
-eq("組の分母の出し方（なし）を初めの値にしない（X は組の外）", await pg.locator("[data-listtitle] [data-bulkden]").isChecked(), true);
+eq("組の分母の出し方（なし）を初めの値にしない（X は組の外）: 「1/4」が濃い", await pg.locator('[data-listtitle] [data-numstyle="den"]').getAttribute("aria-pressed"), "true");
 await pg.locator("[data-listtitle] [data-bulkapply]").click();
 await pg.waitForTimeout(300);
 c = await chips();
@@ -125,17 +125,64 @@ await pg.locator("button", { hasText: "☰" }).first().click();
 // 8) 番号なしで一括変更すると組から外れる
 await dragSelect(60, 640, 400, 880);
 await pg.locator("[data-seltitlebtn]").click();
-await pg.locator("[data-bulknumber]").uncheck();
+await pg.locator('[data-numstyle="none"]').click();
 eq("番号なしの見本", await pg.locator("[data-bulksample]").textContent(), "序");
 await pg.locator("[data-bulkapply]").click();
 await pg.waitForTimeout(200);
 eq("X のチップが消える", (await chips()).X, "");
 
-// 9) 開き直しても番号は同じ
+// 9) 選んだ付箋の「#」から（6.24.0）: T は今までどおり、隣の「#」でその場にメニュー。3つから選ぶ
+{
+  await clickEmpty();
+  await dragSelect(60, 20, 1000, 560);
+  const sel = await pg.getByText(/個選択中$/).textContent();
+  eq("前提: 上の2行の付箋（C・F・E・D・A）を選んだ", sel, "5個選択中");
+  eq("選んだ付箋には T の隣に「#」", await pg.locator('[data-note="C"] [data-numbtn]').count(), 1);
+  eq("選んでいない付箋（X）には「#」が無い", await pg.locator('[data-note="X"] [data-numbtn]').count(), 0);
+  const tBefore = (await saved()).notes.find((n) => n.id === "C").useTitle;
+  await pg.locator('[data-note="C"] button[title="タイトル欄をやめる"]').click();
+  eq("T は今までどおり、その付箋のタイトル欄だけを出し入れ", [(await saved()).notes.find((n) => n.id === "C").useTitle, tBefore], [false, true]);
+  await clickEmpty();
+  await pg.keyboard.press("Control+z");
+  await dragSelect(60, 20, 1000, 560);
+  await pg.locator('[data-note="C"] [data-numbtn]').click();
+  const pop = pg.locator('[data-note="C"] [data-numpop]');
+  eq("「#」を押すと、その付箋の中にメニュー（選んだ 5 枚）", [await pop.count(), (await pop.textContent()).includes("選んだ 5 枚")], [1, true]);
+  {
+    const bb = await pg.locator('[data-note="C"] [data-numbtn]').boundingBox(), pb = await pop.boundingBox();
+    eq("メニューは「#」のすぐ下", pb.y >= bb.y + bb.height - 2 && pb.y <= bb.y + bb.height + 12, true);
+  }
+  eq("通し番号の3つ（なし・1/4・1）", await pop.locator("[data-numstyle]").allTextContents(), ["なし", "1/4", "1"]);
+  await pop.locator("[data-bulktitle]").fill("破");
+  await pop.locator('[data-numstyle="plain"]').click();
+  eq("「1」を選ぶと濃くなり、見本が変わる", [await pop.locator('[data-numstyle="plain"]').getAttribute("aria-pressed"), await pop.locator("[data-bulksample]").textContent()], ["true", "破 1、破 2 …"]);
+  await pop.locator("[data-bulkapply]").click();
+  await pg.waitForTimeout(300);
+  c = await chips();
+  eq("5枚が「破」1〜5（読む順）", [c.C, c[F.id], c.E, c.D, c.A], ["1", "2", "3", "4", "5"]);
+  eq("メニューは閉じる", await pg.locator("[data-numpop]").count(), 0);
+  // 操作列のボタンがしまわれる狭い付箋（N）を Shift+クリックで足す →「⋯」のメニューに「タイトルと通し番号」
+  {
+    const nb = await pg.locator('[data-note="N"]').boundingBox();
+    await pg.keyboard.down("Shift"); await pg.mouse.click(nb.x + nb.width / 2, nb.y + 80); await pg.keyboard.up("Shift");
+    await pg.waitForTimeout(200);
+    eq("前提: 6枚選んでいる", await pg.getByText(/個選択中$/).textContent(), "6個選択中");
+    eq("前提: N の操作列はしまわれている", await pg.locator('[data-note="N"] [data-numbtn]').count(), 0);
+    await pg.locator('[data-note="N"] button[title="ほかの操作"]').click();
+    const item = pg.locator('[data-note="N"] [data-toolitem="num"]');
+    eq("「⋯」のメニューに「タイトルと通し番号」", (await item.textContent()).trim(), "タイトルと通し番号");
+    await item.click();
+    eq("押すと N の中にメニュー（選んだ 6 枚）", (await pg.locator('[data-note="N"] [data-numpop]').textContent()).includes("選んだ 6 枚"), true);
+    await clickEmpty();
+    eq("外を押すと閉じる", await pg.locator("[data-numpop]").count(), 0);
+  }
+}
+
+// 10) 開き直しても番号は同じ
 await saved(); // 自動保存（0.8秒）を待つ
 await pg.reload(); await pg.waitForTimeout(1500);
 c = await chips();
-eq("開き直しても同じ", [c[F.id], c.E, c.D, c.A, c.X], ["1/4", "2/4", "3/4", "4/4", ""]);
+eq("開き直しても同じ", [c.C, c[F.id], c.E, c.D, c.A, c.X, c.N], ["1", "2", "3", "4", "5", "", ""]);
 
 console.log(ng === 0 ? "\nbulk-title: すべて期待どおりです" : `\nbulk-title: ${ng} 件 期待と違います`);
 await browser.close();
