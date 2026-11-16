@@ -1471,6 +1471,8 @@ export default function IdeaBoard() {
           const it = byNote.get(n.id);
           if (!it) return n;
           const f = incomingFields(it);
+          // 番号の組に入っている付箋（6.27.0）は、番号が見えるようにタイトル欄を出したまま。タイトルが空なら今のタイトルを残す
+          if (n.seq) { if (!f.title.trim()) f.title = n.title || ""; f.useTitle = true; }
           return { ...n, ...f, src: srcOf(it, f) };
         }),
       };
@@ -1513,7 +1515,22 @@ export default function IdeaBoard() {
 
     updateBoard((b) => {
       let num = b.nextNum || 1;
-      for (const [catName, list] of groups) {
+      // 取り込み済みの付箋の続きとして届いた鎖（6.27.0。ユーザー指定）は、まとまりには入れず、前の付箋のすぐ右に横一列で置く
+      // （通し番号は読む順で決まるので、離れた所に置くと番号が前の付箋より先になってしまう）
+      const oldBySrc = new Map();
+      for (const m of b.notes) if (m.src?.id && !m.parentId) oldBySrc.set(String(m.src.id), m);
+      const follow = [];
+      const following = new Set();
+      for (const chain of chainsOf(items)) {
+        const head = chain[0];
+        const prev = head.prev != null && head.prev !== "" ? oldBySrc.get(String(head.prev)) : null;
+        if (!prev) continue;
+        follow.push({ prev, chain });
+        for (const it of chain) following.add(it);
+      }
+      for (const [catName, list0] of groups) {
+        const list = list0.filter((it) => !following.has(it));
+        if (list.length === 0) continue;
         // つながっていない付箋は3列で詰め、スマホでつなげて書いた付箋はその下に横一列（6.18.0）
         const lay = layoutChains(chainsOf(list), COLS);
         const cols = lay.cols, rows = lay.rows;
@@ -1561,10 +1578,58 @@ export default function IdeaBoard() {
         ox += gw + 50;
         rowH = Math.max(rowH, gh);
       }
+      // 続きの鎖: 前の付箋のすぐ右（間 24px。ふさがっていれば空くまで右へ）に順に置く（「＋→」と同じ置き方）
+      const sizeOf = (m) => (m.expanded ? { w: m.ew, h: m.eh } : { w: m.w, h: m.h });
+      const blocks = () => [...b.notes, ...newNotes].filter((m) => !m.parentId).map((m) => ({ x: m.x, y: m.y, ...sizeOf(m) }));
+      for (const { prev, chain } of follow) {
+        let left = prev, ls = sizeOf(prev);
+        for (const it of chain) {
+          let x = left.x + ls.w + GAP, y = left.y;
+          if (gridRef.current) { x = snap(x); y = snap(y); }
+          const obs = blocks();
+          for (let i = 0, r; i < 200 && (r = obs.find((o) => x < o.x + o.w && x + NW > o.x && y < o.y + o.h && y + NH > o.y)); i++) {
+            x = gridRef.current ? snap(r.x + r.w + GAP) : r.x + r.w + GAP;
+          }
+          const n = makeNote(x, y, null, num++);
+          const f = incomingFields(it);
+          Object.assign(n, f);
+          n.src = srcOf(it, f);
+          n.z = ++zRef.current;
+          newNotes.push(n);
+          left = n; ls = { w: n.w, h: n.h };
+        }
+      }
       // つなげて書いた付箋を線で結ぶ（前の付箋 → この付箋）。前の付箋は、今回貼ったものか、
       // このボードに取り込み済みのもの（src.id で探す）。見つからなければ線は引かない
       const bySrc = new Map();
       for (const n of [...b.notes, ...newNotes]) if (n.src?.id && !n.parentId) bySrc.set(String(n.src.id), n.id);
+      // つなげて書いた付箋には通し番号を振る（6.27.0。ユーザー指定）。鎖ごとに1つの組。鎖の前が取り込み済みの付箋なら
+      // その付箋も含め、その付箋に番号があればその組に入る。タイトルの無い付箋は鎖の先頭のタイトル（無ければ番号だけ）。
+      // 番号を出すためタイトル欄を出す。取り込んだ印の指紋（src.h）は書き換えたあとの中身で付け直す（あとでスマホで直したとき
+      // 「パソコンで手を加えた」と取り違えないため）
+      const newById = new Map(newNotes.map((n) => [n.id, n]));
+      const oldPatch = new Map();
+      for (const chain of chainsOf(items)) {
+        const head = chain[0];
+        const prevId = head.prev != null && head.prev !== "" ? bySrc.get(String(head.prev)) : null;
+        const prevNote = prevId && !newById.has(prevId) ? b.notes.find((m) => m.id === prevId) : null;
+        const members = chain.map((it) => newById.get(bySrc.get(String(it.id)))).filter(Boolean);
+        if (members.length + (prevNote ? 1 : 0) < 2) continue;
+        const seq = prevNote?.seq ? { id: prevNote.seq.id, den: prevNote.seq.den !== false } : { id: `q${nextId()}`, den: true };
+        const baseTitle = ((prevNote ? prevNote.title : members[0].title) || "").trim();
+        for (const n of members) {
+          if (!(n.title || "").trim()) n.title = baseTitle;
+          n.useTitle = true;
+          n.seq = { ...seq };
+          if (n.src) n.src = { ...n.src, h: noteContentHash(n) };
+        }
+        if (prevNote && !prevNote.seq) {
+          const untouched = prevNote.src && noteContentHash(prevNote) === prevNote.src.h;
+          const m = { ...prevNote, useTitle: true, seq: { ...seq } };
+          if (untouched) m.src = { ...prevNote.src, h: noteContentHash(m) };
+          oldPatch.set(prevNote.id, m);
+        }
+      }
       const newIds = new Set(newNotes.map((n) => n.id));
       const edges = [...(b.edges || [])];
       for (const [from, to] of linksOf(items)) {
@@ -1576,7 +1641,7 @@ export default function IdeaBoard() {
       return {
         ...b,
         nextNum: num,
-        notes: [...b.notes, ...newNotes],
+        notes: [...b.notes.map((m) => oldPatch.get(m.id) || m), ...newNotes],
         edges,
         zones: [...(b.zones || []), ...newZones],
       };
@@ -1879,11 +1944,12 @@ export default function IdeaBoard() {
   // 貼る前の画面でタイトルを書いていれば本文）。
   // クリックで作ったときは React がその直後（マイクロタスク）に描くので、まずそこで置く（すぐ打った文字を落とさない）。
   // まだ描かれていなければ数フレーム待つ。縮小して見出しだけの表示など、入力欄が見えていなければ何もしない
-  const focusNew = (getEl) => {
+  const focusNew = (getEl, { body = false } = {}) => {
     const tryFocus = () => {
       const el = getEl();
       if (!el) return false;
-      const boxes = [...el.querySelectorAll("input, textarea")].filter((f) => f.offsetParent !== null);
+      // body: 本文に置く（「＋→」。番号のためにタイトル欄を出しても、書くのは本文。6.27.0）
+      const boxes = [...el.querySelectorAll(body ? "textarea" : "input, textarea")].filter((f) => f.offsetParent !== null);
       (boxes.find((f) => !f.value) || boxes[boxes.length - 1])?.focus();
       return true;
     };
@@ -1939,14 +2005,20 @@ export default function IdeaBoard() {
   // 付箋のすぐ右に、同じ色・タグの付箋を作って線でつなぐ（同じ親の中。右がふさがっていれば空くまで右へ）
   // 入れ子の中で親の枠からはみ出すときは、下に作る
   const SIDE_GAP = 24;
-  const addSideNote = (src) => {
+  const addSideNote = (src0) => {
     const newId = nextId();
+    const newSeqId = `q${nextId()}`;
     updateBoard((b) => {
+      const src = b.notes.find((m) => m.id === src0.id) || src0;
       const num = b.nextNum || 1;
       const n = makeNote(0, 0, src.parentId, num);
       Object.assign(n, { id: newId, color: src.color, tags: [...(src.tags || [])], useTitle: !!src.useTitle, w: src.w, h: src.h });
-      // 番号を付けた付箋からは、同じタイトルで同じ組に入る（番号は置いた位置の読む順で決まる。6.23.0）
-      if (src.seq) Object.assign(n, { title: src.title || "", useTitle: true, seq: { ...src.seq } });
+      // 線でつなぐ付箋には通し番号を振る（6.27.0。ユーザー指定）。元の付箋に番号があればその組に入る（6.23.0）。
+      // 無ければ元の付箋と新しい付箋で新しい組（分母あり）を作る。タイトルは元の付箋のもの（無ければ番号だけ）。
+      // 番号を出すため両方のタイトル欄を出す。番号は置いた位置の読む順で決まる
+      const seq = src.seq ? { ...src.seq } : { id: newSeqId, den: true };
+      Object.assign(n, { title: src.title || "", useTitle: true, seq });
+      const srcPatch = src.seq ? null : { useTitle: true, seq: { ...seq } };
       const gap = gridRef.current ? Math.max(GRID, snap(SIDE_GAP)) : SIDE_GAP;
       const sizeOf = (m) => (m.expanded ? { w: m.ew, h: m.eh } : { w: m.w, h: m.h });
       const sibs = b.notes.filter((m) => (m.parentId || null) === (src.parentId || null)).map((m) => ({ x: m.x, y: m.y, ...sizeOf(m) }));
@@ -1967,9 +2039,10 @@ export default function IdeaBoard() {
       n.x = src.parentId ? Math.max(0, pos.x) : pos.x;
       n.y = src.parentId ? Math.max(0, pos.y) : pos.y;
       n.z = ++zRef.current;
-      return { ...b, nextNum: num + 1, notes: [...b.notes, n], edges: [...(b.edges || []), { id: nextId(), from: src.id, to: newId }] };
+      const notesNow = srcPatch ? b.notes.map((m) => (m.id === src.id ? { ...m, ...srcPatch } : m)) : b.notes;
+      return { ...b, nextNum: num + 1, notes: [...notesNow, n], edges: [...(b.edges || []), { id: nextId(), from: src.id, to: newId }] };
     });
-    focusNew(() => noteEls.current[newId]);
+    focusNew(() => noteEls.current[newId], { body: true });
   };
 
   // ---- ボード直書きの文字 ----

@@ -71,6 +71,11 @@ const board = () => P.evaluate(() => {
   const t = Object.fromEntries(b.notes.map((n) => [n.id, n.text]));
   return { notes: b.notes.map((n) => ({ text: n.text, x: Math.round(n.x), y: Math.round(n.y), w: n.w, color: n.color })), edges: b.edges.map((e) => `${t[e.from]}→${t[e.to]}`) };
 });
+// 付箋の本文 → タイトル欄の右端の通し番号（6.27.0。無ければ ""）
+const chipsOnPc = () => P.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-note]")].map((el) => {
+  const c = el.querySelector(":scope > div > [data-seqchip]");
+  return [el.querySelector("textarea")?.value, c ? c.textContent : ""];
+})));
 async function receiveAll() {
   await P.getByRole("button", { name: /^デバイス接続/ }).first().click();
   await P.waitForTimeout(1500);
@@ -89,6 +94,8 @@ await receiveAll();
   eq("つなげた3枚は同じ高さで、左から順にすき間 24 で並ぶ", [a.y === c.y && c.y === d.y, c.x - a.x, d.x - c.x], [true, a.w + 24, a.w + 24]);
   eq("単独の付箋は別の段", n["単独のメモ"].y !== a.y, true);
   eq("色もそのまま（2つめだけさくら）", [a.color, c.color, d.color], [5, 1, 5]);
+  const ch = await chipsOnPc();
+  eq("つなげた3枚に通し番号 1/3・2/3・3/3（6.27.0）、単独には付かない", [ch["一つめ（直した）"], ch["二つめ"], ch["三つめ"], ch["単独のメモ"]], ["1/3", "2/3", "3/3", ""]);
 }
 
 console.log("\n■ 7) あとから続きを書いて送っても、取り込み済みの付箋とつながる");
@@ -108,6 +115,13 @@ console.log("\n■ 7) あとから続きを書いて送っても、取り込み�
   await P.reload(); await P.waitForTimeout(2500);
   await receiveAll();
   eq("取り込み済みの「三つめ」から線が引かれる", (await board()).edges, ["一つめ（直した）→二つめ", "二つめ→三つめ", "三つめ→四つめ（あとから）"]);
+  {
+    const nn = Object.fromEntries((await board()).notes.map((x) => [x.text, x]));
+    const t3 = nn["三つめ"], t4 = nn["四つめ（あとから）"];
+    eq("続きは「三つめ」のすぐ右に置く（同じ高さ・間 24）（6.27.0）", [t4.y === t3.y, t4.x - t3.x], [true, t3.w + 24]);
+  }
+  const ch = await chipsOnPc();
+  eq("あとから届いた続きも同じ組に入る（1/4〜4/4）", [ch["一つめ（直した）"], ch["二つめ"], ch["三つめ"], ch["四つめ（あとから）"]], ["1/4", "2/4", "3/4", "4/4"]);
 }
 
 await done("つなげて書く（スマホ）");
