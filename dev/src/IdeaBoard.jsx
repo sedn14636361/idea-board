@@ -2571,6 +2571,29 @@ export default function IdeaBoard() {
   }, []);
 
   // ---- 範囲選択（マーキー）と領域作成 ----
+  // 範囲選択・領域作成のドラッグ中は、付箋の本文やタグなどの文字を選ばない（6.26.0。ユーザー指定「文字が青く反転するのは見栄えが悪い」）。
+  // Chromium はポインタを捕まえると文字選択が始まらないが、Safari（WebKit）は捕まえても文字を選んでしまう。
+  // ドラッグの間だけ html に ib-noselect（user-select: none）を付け、今ある文字選択を消し、selectstart を止める。離したら外す
+  const clearTextSelection = () => {
+    const sel = window.getSelection?.();
+    if (sel && sel.rangeCount && !sel.isCollapsed) sel.removeAllRanges();
+  };
+  const noTextSelect = (on) => {
+    document.documentElement.classList.toggle("ib-noselect", on);
+    if (on) clearTextSelection();
+  };
+  useEffect(() => {
+    const stop = (e) => { if (document.documentElement.classList.contains("ib-noselect")) e.preventDefault(); };
+    const end = () => { if (!selBoxRef.current) document.documentElement.classList.remove("ib-noselect"); };
+    document.addEventListener("selectstart", stop, true);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      document.removeEventListener("selectstart", stop, true);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+  }, []);
   const onBoardPointerDown = (e) => {
     if (drawMode && onDrawPointerDown(e)) return; // 手書きモードが最優先
     if (e.target !== contentRef.current) return;
@@ -2583,6 +2606,7 @@ export default function IdeaBoard() {
     }
     const { x, y } = toWorld(e.clientX, e.clientY);
     selBoxRef.current = { x1: x, y1: y, x2: x, y2: y, moved: false, mode: zoneMode ? "zone" : "select" };
+    noTextSelect(true);
     setSelBox({ x1: x, y1: y, x2: x, y2: y });
     e.currentTarget.setPointerCapture(e.pointerId);
     if (e.pointerType !== "mouse") e.preventDefault(); // タッチ時のスクロールを抑止
@@ -2597,12 +2621,14 @@ export default function IdeaBoard() {
     s.x2 = x;
     s.y2 = y;
     setSelBox({ x1: s.x1, y1: s.y1, x2: x, y2: y });
+    clearTextSelection();
   };
 
   const onBoardPointerUp = () => {
     if (drawRef.current) { onDrawPointerUp(); return; }
     const s = selBoxRef.current;
     selBoxRef.current = null;
+    noTextSelect(false);
     setSelBox(null);
     if (!s) return;
     if (s.mode === "zone") {
@@ -4518,6 +4544,8 @@ export default function IdeaBoard() {
         @keyframes pop { from { transform: scale(.92); opacity: 0 } to { transform: scale(1); opacity: 1 } }
         @media (prefers-reduced-motion: reduce) { .note-enter { animation: none } }
         textarea:focus, input:focus { outline: none }
+        /* 範囲選択・領域作成のドラッグ中は文字を選ばない（6.26.0） */
+        .ib-noselect, .ib-noselect * { -webkit-user-select: none !important; user-select: none !important; }
         /* 入力例の文字（6.20.0）: 文字の色の 38%（Material Design の入力例と同じ濃さ）。地が暗い欄でも文字色に合わせて薄くなる */
         input::placeholder, textarea::placeholder { color: currentColor; opacity: .38 }
         button { font-family: inherit }
