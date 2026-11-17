@@ -12,6 +12,7 @@ import { makeHist, recordChange, undoStep, redoStep, canUndo, canRedo, boardToSh
 import { snapToGrid, enclose, tagStates, toggleTagOn, matchSize, scaleSize, followSize } from "./arrange.js";
 import { seriesOf, seqLabel, titlesOn, seqDenOn, leaveSeq, readingOrder } from "./series.js";
 import { incomingPlan, noteContentHash, chainsOf, layoutChains, linksOf } from "./incoming.js";
+import { boardToHtml, strokePath } from "./exporthtml.js";
 import { APP_VERSION } from "./version.js";
 
 // ---- 定数 ----
@@ -2415,20 +2416,7 @@ export default function IdeaBoard() {
   });
 
   // ---- 手書き ----
-  // 点列を滑らかなパスに変換（中点をつなぐ二次ベジェ）
-  const strokePath = (pts) => {
-    if (!pts || pts.length === 0) return "";
-    if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y} l 0.1 0`;
-    let d = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 1; i < pts.length - 1; i++) {
-      const mx = (pts[i].x + pts[i + 1].x) / 2;
-      const my = (pts[i].y + pts[i + 1].y) / 2;
-      d += ` Q ${pts[i].x} ${pts[i].y} ${mx} ${my}`;
-    }
-    const last = pts[pts.length - 1];
-    d += ` L ${last.x} ${last.y}`;
-    return d;
-  };
+  // 点列を滑らかなパスに変換するのは strokePath（src/exporthtml.js。HTML の書き出しと共通）
 
   const boardPoint = (e) => toWorld(e.clientX, e.clientY);
 
@@ -3626,8 +3614,9 @@ export default function IdeaBoard() {
     if (copyMenuFor || listActionOpen || selMoveOpen) loadDestList();
   }, [copyMenuFor, listActionOpen, selMoveOpen, currentProjectId]);
 
-  // ---- テキストで書き出す ----
+  // ---- テキスト・HTML で書き出す ----
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportFmt, setExportFmt] = useState("text"); // "text" | "html"（6.28.0）
   const [exportOpts, setExportOpts] = useState({ tags: false, num: false, nest: true });
 
   // 1枚分のテキスト。タイトルを使っている付箋だけタイトル行を付ける
@@ -3683,9 +3672,24 @@ export default function IdeaBoard() {
     }
   };
 
-  const downloadText = (text) => {
-    const name = `${(board?.title || "board").replace(/[\\/:*?"<>|]/g, "_")}.txt`;
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  // HTML 1ファイル（src/exporthtml.js）。見た目どおり・今のボード（選んでいればその付箋と文字だけ）
+  const buildHtml = () => boardToHtml(board, {
+    colors: COLORS, tagColorOf, alertTags: settings.alertTags || [],
+    tagLimit: settings.noteTagLimit ?? DEFAULT_SETTINGS.noteTagLimit,
+    seq: seqAll, textSizes: TEXT_SIZES, simple: simpleStyle, grid: GRID, gridMode,
+    noteIds: selectedIds, textIds: selectedTextIds,
+    projectName: project?.name || "", exportedAt: new Date().toLocaleString("ja-JP"), version: APP_VERSION,
+  });
+
+  // 画像を含むと大きくなるので、開いているときだけ・中身が変わったときだけ作り直す
+  const exportHtml = useMemo(
+    () => (exportOpen && exportFmt === "html" && board ? buildHtml() : ""),
+    [exportOpen, exportFmt, board, selectedIds, selectedTextIds, settings, simpleStyle, gridMode, seqAll, project?.name]
+  );
+
+  const downloadText = (text, ext = "txt", type = "text/plain") => {
+    const name = `${(board?.title || "board").replace(/[\\/:*?"<>|]/g, "_")}.${ext}`;
+    const blob = new Blob([text], { type: `${type};charset=utf-8` });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -5544,7 +5548,7 @@ export default function IdeaBoard() {
         </button>
         <button
           onClick={() => setExportOpen(true)}
-          title="付箋の文章をテキストにまとめる"
+          title="テキストや HTML に書き出す"
           style={{ background: "transparent", border: "1px solid #8A857B", color: "#D8D3C8", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}
         >
           書き出す
@@ -6870,7 +6874,7 @@ export default function IdeaBoard() {
                   rows: [
                     ["ボード", "下のタブで増やせます。用途ごとに分けられます"],
                     ["プロジェクト", "📁 から切り替え。ボードのまとまりです"],
-                    ["文章にする", "「書き出す」でコピーまたはテキストfile保存"],
+                    ["書き出す", "「書き出す」でテキストのコピー・保存、または見た目どおりの HTML ファイルに保存"],
                     ["控えを取る", "📁 →「ファイルへ保存」。別のパソコンへ移すときにも使います"],
                     ["戻す", "📁 の「復元ポイント」から、少し前の状態に戻せます"],
                   ],
@@ -7168,10 +7172,12 @@ export default function IdeaBoard() {
         );
       })()}
 
-      {/* テキストで書き出す */}
+      {/* テキスト・HTML で書き出す */}
       {exportOpen && (() => {
         const targets = exportTargets();
-        const text = buildText(targets);
+        const html = exportFmt === "html";
+        const text = html ? "" : buildText(targets);
+        const picked = selectedIds.length > 0 || (html && selectedTextIds.length > 0);
         return (
           <div
             onPointerDown={(e) => { if (e.target === e.currentTarget) setExportOpen(false); }}
@@ -7182,13 +7188,30 @@ export default function IdeaBoard() {
               style={{ background: "#FFFDF6", borderRadius: 10, padding: "16px 18px", width: "min(600px, 94vw)", maxHeight: "86vh", display: "flex", flexDirection: "column", boxShadow: "0 10px 30px rgba(30,25,15,.35)", color: "#3E3A33" }}
             >
               <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-                <strong style={{ fontSize: 15, flex: 1 }}>テキストで書き出す</strong>
+                <strong style={{ fontSize: 15, marginRight: 10 }}>書き出す</strong>
+                <div role="tablist" style={{ display: "flex", border: "1px solid #C9C2B2", borderRadius: 6, overflow: "hidden", flex: "0 0 auto" }}>
+                  {[["text", "テキスト"], ["html", "HTML"]].map(([k, label]) => (
+                    <button
+                      key={k}
+                      role="tab"
+                      data-exportfmt={k}
+                      aria-selected={exportFmt === k}
+                      onClick={() => setExportFmt(k)}
+                      style={{ border: "none", background: exportFmt === k ? "#3E3A33" : "transparent", color: exportFmt === k ? "#F6F2E9" : "#3E3A33", fontSize: 12, fontWeight: 700, padding: "4px 12px", cursor: "pointer" }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 11, color: "#9C9587" }}>
-                  {selectedIds.length > 0 ? `選択中の${targets.length}枚` : `このボードの${targets.length}枚`}
+                  {picked
+                    ? `選択中の${targets.length}枚${html && selectedTextIds.length > 0 ? `・文字${selectedTextIds.length}つ` : ""}`
+                    : `このボードの${targets.length}枚`}
                 </span>
               </div>
 
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
+              {!html && <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
                 {[
                   { key: "nest", label: "中の付箋も含める" },
                   { key: "tags", label: "タグを付ける" },
@@ -7204,9 +7227,17 @@ export default function IdeaBoard() {
                     {o.label}
                   </label>
                 ))}
-              </div>
+              </div>}
 
-              <textarea
+              {html ? (
+                <iframe
+                  title="HTML の見本"
+                  data-exportpreview
+                  sandbox=""
+                  srcDoc={exportHtml}
+                  style={{ flex: 1, minHeight: 320, height: "56vh", width: "100%", boxSizing: "border-box", border: "1px solid #C9C2B2", borderRadius: 6, background: "#F6F2E9", marginBottom: 12 }}
+                />
+              ) : <textarea
                 readOnly
                 value={text}
                 style={{
@@ -7215,7 +7246,7 @@ export default function IdeaBoard() {
                   fontSize: 13, lineHeight: 1.8, padding: "10px 12px",
                   fontFamily: "inherit", color: "#3E3A33", resize: "none", marginBottom: 12,
                 }}
-              />
+              />}
 
               <div style={{ display: "flex", gap: 8 }}>
                 <button
@@ -7225,6 +7256,15 @@ export default function IdeaBoard() {
                   閉じる
                 </button>
                 <div style={{ flex: 1 }} />
+                {html ? (
+                  <button
+                    data-exportsave
+                    onClick={() => downloadText(exportHtml, "html", "text/html")}
+                    style={{ border: "none", borderRadius: 6, background: "#3E3A33", color: "#F6F2E9", fontSize: 13, fontWeight: 700, padding: "8px 18px", cursor: "pointer" }}
+                  >
+                    ファイルに保存
+                  </button>
+                ) : <>
                 <button
                   onClick={() => downloadText(text)}
                   style={{ border: "1px solid #C9C2B2", borderRadius: 6, background: "transparent", color: "#3E3A33", fontSize: 13, padding: "8px 16px", cursor: "pointer" }}
@@ -7237,6 +7277,7 @@ export default function IdeaBoard() {
                 >
                   コピー
                 </button>
+                </>}
               </div>
             </div>
           </div>

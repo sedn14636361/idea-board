@@ -58,6 +58,7 @@ const all = [
   ["multi-grab", "multi-grab.mjs", { BASE }],                        // 2つ以上選んでいるときは、選んだ付箋のどこをつかんでも動かせる
   ["shift-repeat", "shift-repeat.mjs", { BASE }],                    // Shift を押し続けた（キーの自動の繰り返し）まま動かしても落ちない
   ["edge-toggle", "edge-toggle.mjs", { BASE }],                      // つないである付箋どうしでもう一度つなぐと線を外す
+  ["html-export", "html-export.mjs", { BASE }],                      // ボードを HTML 1ファイルに書き出す（6.28.0）
   ["mobile-peek", "mobile-peek.mjs", { BASE }],                      // スマホ版: 今ある付箋（このスマホ・パソコンのボード）を見ながら書く
   ["mobile-pc-edit", "mobile-pc-edit.mjs", { BASE }],                // スマホ版: パソコンのボードの付箋を直す（6.21.0）
   ["mobile-thread", "mobile-thread.mjs", { BASE }],                  // スマホ版: つなげた付箋を続けて書く → パソコンで線でつながる
