@@ -118,6 +118,21 @@ eq("見出しの番号・タグ（赤が先頭・3件＋2）", [
   await out.locator('[data-note="n3"] .ib-tag').allTextContents(),
 ], ["2/2", ["重要度高", "起", "承", "+2"]]);
 
+// 見出しの帯（6.28.1）: 画面より広いボードを横・下に送っても、帯はページの幅いっぱいで、題は左上に見えている
+await out.setViewportSize({ width: 900, height: 600 });
+await out.evaluate(() => window.scrollTo(document.documentElement.scrollWidth, 400));
+await out.waitForTimeout(200);
+eq("見出しの帯はページの幅いっぱい・題は左上に見える", await out.evaluate(() => {
+  const h = document.querySelector(".ib-head").getBoundingClientRect(), t = document.querySelector(".ib-head strong").getBoundingClientRect();
+  return { wide: document.documentElement.scrollWidth > innerWidth, full: Math.round(h.width) === document.documentElement.scrollWidth, right: Math.round(h.right) >= innerWidth, top: Math.round(h.top), title: [Math.round(t.left), t.top < 40] };
+}), { wide: true, full: true, right: true, top: 0, title: [16, true] });
+await out.setViewportSize({ width: 2400, height: 1000 });
+await out.evaluate(() => window.scrollTo(0, 0));
+eq("ボードが画面より狭いときも帯は画面の幅いっぱい", await out.evaluate(() => Math.round(document.querySelector(".ib-head").getBoundingClientRect().width)), 2400);
+await out.setViewportSize({ width: 1500, height: 1000 });
+await out.evaluate(() => window.scrollTo(0, 0));
+await out.waitForTimeout(200);
+
 // 3) 位置: 画面と同じ（±2px）。原点からの距離で比べる
 const exp = await measure(out, ".ib-origin");
 near("付箋の位置と大きさが画面と同じ（開いた入れ子の中の c41・c42 も）", exp.rects, app.rects);

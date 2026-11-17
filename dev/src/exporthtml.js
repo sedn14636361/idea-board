@@ -373,7 +373,7 @@ ${CSS}
 </style>
 </head>
 <body>
-<header class="ib-head"><strong>${esc(title)}</strong>${sub ? `<span>${sub}</span>` : ""}</header>
+<header class="ib-head"><div class="ib-headin"><strong>${esc(title)}</strong>${sub ? `<span>${sub}</span>` : ""}</div></header>
 <main class="ib-board" style="width:${W}px;height:${H}px;background-image:${bgImage};background-size:${grid}px ${grid}px;background-position:${ox}px ${oy}px">
 <div class="ib-origin" style="left:${ox}px;top:${oy}px">
 ${zonesHtml}${imagesHtml}${notesHtml}<div class="ib-layer ib-edgelayer">${edgesSvg(lines)}</div>${strokesHtml}${textsHtml}
@@ -388,7 +388,10 @@ ${zonesHtml}${imagesHtml}${notesHtml}<div class="ib-layer ib-edgelayer">${edgesS
 const CSS = `
 *{box-sizing:content-box}
 html,body{margin:0;background:#F6F2E9;color:#3E3A33;font-family:'Zen Maru Gothic','Hiragino Maru Gothic ProN','Hiragino Sans','Yu Gothic','Meiryo',sans-serif}
-.ib-head{position:sticky;top:0;left:0;z-index:2147483600;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;padding:8px 16px;background:#3E3A33;color:#F6F2E9;font-size:14px}
+/* 6.28.1: ページの幅をボードに合わせる（body が画面の幅のままだと、横に送ったとき見出しの帯が途中で切れていた）。文字は左端に留める */
+body{width:max-content;min-width:100%}
+.ib-head{position:sticky;top:0;z-index:2147483600;padding:8px 0;background:#3E3A33;color:#F6F2E9;font-size:14px}
+.ib-headin{position:sticky;left:0;display:inline-flex;gap:12px;align-items:baseline;flex-wrap:wrap;max-width:100vw;box-sizing:border-box;padding:0 16px}
 .ib-head span{font-size:12px;color:#D8D3C8}
 .ib-board{position:relative}
 .ib-origin{position:absolute;width:0;height:0}
